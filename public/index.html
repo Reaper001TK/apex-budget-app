@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ApexBudget SQL - Database Powered</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+
+    <!-- Header -->
+    <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap justify-between items-center gap-4">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-blue-600 rounded-lg text-white font-bold text-xl">🗄️</div>
+                <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">ApexBudget SQL</h1>
+            </div>
+            <nav class="flex space-x-2 bg-slate-900 p-1 rounded-xl border border-slate-700 text-sm">
+                <button onclick="switchTab('dashboard')" id="tab-dashboard" class="px-4 py-2 rounded-lg text-white bg-blue-600">Dashboard</button>
+                <button onclick="switchTab('budget')" id="tab-budget" class="px-4 py-2 rounded-lg text-slate-400 hover:text-white">Categories</button>
+                <button onclick="switchTab('transactions')" id="tab-transactions" class="px-4 py-2 rounded-lg text-slate-400 hover:text-white">Transactions</button>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 py-6 flex-grow w-full">
+        
+        <!-- DASHBOARD -->
+        <div id="view-dashboard" class="space-y-6">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <p class="text-xs uppercase font-semibold text-slate-400">Total Income</p>
+                    <p id="stat-income" class="text-2xl font-bold text-emerald-400 mt-2">$0.00</p>
+                </div>
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <p class="text-xs uppercase font-semibold text-slate-400">Total Expenses</p>
+                    <p id="stat-expenses" class="text-2xl font-bold text-rose-400 mt-2">$0.00</p>
+                </div>
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <p class="text-xs uppercase font-semibold text-slate-400">Net Savings</p>
+                    <p id="stat-savings" class="text-2xl font-bold text-blue-400 mt-2">$0.00</p>
+                </div>
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <p class="text-xs uppercase font-semibold text-slate-400">Savings Rate</p>
+                    <p id="stat-rate" class="text-2xl font-bold text-indigo-400 mt-2">0%</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <h3 class="font-bold mb-4">Expense Categories</h3>
+                    <div class="h-64 flex justify-center"><canvas id="categoryChart"></canvas></div>
+                </div>
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <h3 class="font-bold mb-4">Budget Caps vs Actual Spend</h3>
+                    <div class="h-64"><canvas id="comparisonChart"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- CATEGORIES -->
+        <div id="view-budget" class="hidden space-y-6">
+            <div class="flex justify-between items-center bg-slate-800 border border-slate-700 p-4 rounded-xl">
+                <div>
+                    <h2 class="text-lg font-bold">Category Budget Planner</h2>
+                    <p class="text-xs text-slate-400">Change any budget limit below and press Enter (or click out) to save.</p>
+                </div>
+                <button onclick="document.getElementById('cat-modal').classList.remove('hidden')" class="bg-blue-600 hover:bg-blue-700 text-sm font-semibold px-4 py-2 rounded-lg">+ Add Category</button>
+            </div>
+            <div id="budget-progress-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+        </div>
+
+        <!-- TRANSACTIONS -->
+        <div id="view-transactions" class="hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl h-fit">
+                    <h3 class="font-bold text-lg mb-4">Add to Database</h3>
+                    <form onsubmit="handleAddTransaction(event)" class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1">Description</label>
+                            <input type="text" id="tx-desc" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-400 mb-1">Amount ($)</label>
+                                <input type="number" step="0.01" id="tx-amount" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-400 mb-1">Type</label>
+                                <select id="tx-type" onchange="toggleCategoryForType()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                                    <option value="expense">Expense</option>
+                                    <option value="income">Income</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1">Category</label>
+                            <select id="tx-category" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white"></select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1">Date</label>
+                            <input type="date" id="tx-date" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                        </div>
+                        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 font-semibold py-2 rounded-lg text-sm">Save Transaction</button>
+                    </form>
+                </div>
+
+                <div class="lg:col-span-2 bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <h3 class="font-bold text-lg mb-4">Database Log</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm text-slate-300">
+                            <thead class="bg-slate-900 text-xs text-slate-400 uppercase">
+                                <tr>
+                                    <th class="p-3">Date</th>
+                                    <th class="p-3">Description</th>
+                                    <th class="p-3">Category</th>
+                                    <th class="p-3 text-right">Amount</th>
+                                    <th class="p-3 text-center">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="transaction-rows" class="divide-y divide-slate-700"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modal -->
+    <div id="cat-modal" class="fixed inset-0 bg-black/70 flex items-center justify-center hidden">
+        <div class="bg-slate-800 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4">
+            <h3 class="text-lg font-bold">New SQL Category</h3>
+            <input type="text" id="cat-name" placeholder="Category Name" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+            <input type="number" id="cat-limit" placeholder="Limit ($)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+            <div class="flex justify-end space-x-2">
+                <button onclick="document.getElementById('cat-modal').classList.add('hidden')" class="px-4 py-2 text-xs bg-slate-700 rounded-lg">Cancel</button>
+                <button onclick="saveCategory()" class="px-4 py-2 text-xs bg-blue-600 font-semibold rounded-lg">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let categoryChart, comparisonChart;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('tx-date').valueAsDate = new Date();
+            loadAllData();
+        });
+
+        async function loadAllData() {
+            await renderSummary();
+            await renderCategories();
+            await renderTransactions();
+        }
+
+        async function renderSummary() {
+            const res = await fetch('/api/summary');
+            const data = await res.json();
+            document.getElementById('stat-income').innerText = `$${data.income.toFixed(2)}`;
+            document.getElementById('stat-expenses').innerText = `$${data.expenses.toFixed(2)}`;
+            document.getElementById('stat-savings').innerText = `$${data.savings.toFixed(2)}`;
+            document.getElementById('stat-rate').innerText = `${data.savingsRate}%`;
+        }
+
+        async function renderCategories() {
+            const res = await fetch('/api/categories');
+            const categories = await res.json();
+
+            // Populate Dropdown
+            const select = document.getElementById('tx-category');
+            select.innerHTML = '<option value="Income">Income</option>' + categories.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
+
+            // Render Progress Cards
+            const container = document.getElementById('budget-progress-container');
+            container.innerHTML = categories.map(cat => {
+                const percent = Math.min(Math.round((cat.total_spent / cat.target_limit) * 100), 100);
+                const isOver = cat.total_spent > cat.target_limit;
+                return `
+                    <div class="bg-slate-800 border border-slate-700 p-4 rounded-xl space-y-3">
+                        <div class="flex justify-between items-center">
+                            <span class="font-semibold text-white">${cat.name}</span>
+                            <div class="flex items-center space-x-1">
+                                <span class="text-xs text-slate-400">Budget: $</span>
+                                <input type="number" step="10" value="${cat.target_limit}" 
+                                       onblur="updateCategoryBudget(${cat.id}, this.value)"
+                                       onkeydown="if(event.key === 'Enter') this.blur();" 
+                                       class="w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-right text-emerald-400 font-bold focus:outline-none focus:border-blue-500">
+                                <button onclick="deleteCategory(${cat.id})" title="Delete Category" class="text-xs text-slate-500 hover:text-rose-400 px-1 py-1 ml-1">✕</button>
+                            </div>
+                        </div>
+                        <div class="w-full bg-slate-900 rounded-full h-2.5">
+                            <div class="${percent > 90 ? 'bg-rose-500' : 'bg-blue-500'} h-2.5 rounded-full transition-all duration-300" style="width: ${percent}%"></div>
+                        </div>
+                        <div class="flex justify-between text-xs text-slate-400">
+                            <span>Spent: $${cat.total_spent.toFixed(2)}</span>
+                            <span class="${isOver ? 'text-rose-400 font-semibold' : 'text-slate-400'}">
+                                ${isOver ? 'Over cap by $' + (cat.total_spent - cat.target_limit).toFixed(2) : '$' + (cat.target_limit - cat.total_spent).toFixed(2) + ' left'}
+                            </span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            renderCharts(categories);
+        }
+
+        async function updateCategoryBudget(id, newLimit) {
+            const limit = parseFloat(newLimit);
+            if (!isNaN(limit) && limit >= 0) {
+                try {
+                    const res = await fetch(`/api/categories/${id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ limit })
+                    });
+                    if (!res.ok) {
+                        alert("Please restart your server in terminal (Ctrl+C then npm start)");
+                        return;
+                    }
+                    await loadAllData();
+                } catch (err) {
+                    console.error("Error updating budget:", err);
+                }
+            }
+        }
+
+        async function deleteCategory(id) {
+            if (confirm("Delete this category?")) {
+                await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+                loadAllData();
+            }
+        }
+
+        function toggleCategoryForType() {
+            const type = document.getElementById('tx-type').value;
+            const catSelect = document.getElementById('tx-category');
+            if (type === 'income') {
+                catSelect.value = 'Income';
+            }
+        }
+
+        async function renderTransactions() {
+            const res = await fetch('/api/transactions');
+            const transactions = await res.json();
+
+            document.getElementById('transaction-rows').innerHTML = transactions.map(t => `
+                <tr class="hover:bg-slate-700/40">
+                    <td class="p-3 text-xs text-slate-400">${t.date}</td>
+                    <td class="p-3 font-medium text-white">${t.description}</td>
+                    <td class="p-3"><span class="bg-slate-700 text-xs px-2 py-1 rounded">${t.category_name}</span></td>
+                    <td class="p-3 text-right font-bold ${t.type === 'income' ? 'text-emerald-400' : 'text-slate-200'}">
+                        ${t.type === 'income' ? '+' : '-'}$${t.amount.toFixed(2)}
+                    </td>
+                    <td class="p-3 text-center">
+                        <button onclick="deleteTx(${t.id})" class="text-rose-400 text-xs">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function handleAddTransaction(e) {
+            e.preventDefault();
+            const payload = {
+                description: document.getElementById('tx-desc').value,
+                amount: parseFloat(document.getElementById('tx-amount').value),
+                type: document.getElementById('tx-type').value,
+                category_name: document.getElementById('tx-category').value,
+                date: document.getElementById('tx-date').value
+            };
+
+            await fetch('/api/transactions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            document.getElementById('tx-desc').value = '';
+            document.getElementById('tx-amount').value = '';
+            loadAllData();
+        }
+
+        async function saveCategory() {
+            const name = document.getElementById('cat-name').value;
+            const limit = parseFloat(document.getElementById('cat-limit').value);
+            if (name && limit) {
+                await fetch('/api/categories', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, limit })
+                });
+                document.getElementById('cat-modal').classList.add('hidden');
+                loadAllData();
+            }
+        }
+
+        async function deleteTx(id) {
+            await fetch(`/api/transactions/${id}`, { method: 'DELETE' });
+            loadAllData();
+        }
+
+        function switchTab(tabId) {
+            ['dashboard', 'budget', 'transactions'].forEach(t => {
+                document.getElementById(`view-${t}`).classList.add('hidden');
+                document.getElementById(`tab-${t}`).className = "px-4 py-2 rounded-lg text-slate-400 hover:text-white";
+            });
+            document.getElementById(`view-${tabId}`).classList.remove('hidden');
+            document.getElementById(`tab-${tabId}`).className = "px-4 py-2 rounded-lg text-white bg-blue-600";
+        }
+
+        function renderCharts(categories) {
+            const labels = categories.map(c => c.name);
+            const spentData = categories.map(c => c.total_spent);
+            const limitData = categories.map(c => c.target_limit);
+
+            if (categoryChart) categoryChart.destroy();
+            if (comparisonChart) comparisonChart.destroy();
+
+            categoryChart = new Chart(document.getElementById('categoryChart'), {
+                type: 'doughnut',
+                data: { labels, datasets: [{ data: spentData, backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'] }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } } }
+            });
+
+            comparisonChart = new Chart(document.getElementById('comparisonChart'), {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        { label: 'Budget Cap', data: limitData, backgroundColor: 'rgba(59, 130, 246, 0.4)', borderColor: '#3b82f6', borderWidth: 1 },
+                        { label: 'Actual Spent', data: spentData, backgroundColor: 'rgba(239, 68, 68, 0.7)', borderColor: '#ef4444', borderWidth: 1 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { ticks: { color: '#94a3b8' } }, x: { ticks: { color: '#94a3b8' } } },
+                    plugins: { legend: { labels: { color: '#94a3b8' } } }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
