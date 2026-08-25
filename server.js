@@ -19,7 +19,7 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Initialize Relational Schema with User Accounts
+// Initialize Relational Schema with Auto-Migration
 async function initDb() {
     try {
         await pool.query(`
@@ -31,14 +31,41 @@ async function initDb() {
             );
         `);
 
+        // Auto-migration: If old categories table exists without user_id column, drop and rebuild tables
+        await pool.query(`
+            DO $$ 
+            BEGIN 
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables WHERE table_name='categories'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns WHERE table_name='categories' AND column_name='user_id'
+                ) THEN 
+                    DROP TABLE IF EXISTS transactions CASCADE;
+                    DROP TABLE IF EXISTS categories CASCADE;
+                END IF;
+            END $$;
+        `);
+
         await pool.query(`
             CREATE TABLE IF NOT EXISTS categories (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
-                target_limit NUMERIC NOT NULL,
-                UNIQUE(user_id, name)
+                target_limit NUMERIC NOT NULL
             );
+        `);
+
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'categories_user_id_name_key'
+                ) THEN
+                    ALTER TABLE categories ADD CONSTRAINT categories_user_id_name_key UNIQUE (user_id, name);
+                END IF;
+            EXCEPTION
+                WHEN OTHERS THEN NULL;
+            END $$;
         `);
 
         await pool.query(`
@@ -53,7 +80,7 @@ async function initDb() {
             );
         `);
 
-        console.log('⚡ PostgreSQL Multi-User Tables Ready!');
+        console.log('⚡ PostgreSQL Multi-User Schema Migrated & Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -176,7 +203,6 @@ app.post('/api/categories', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Valid category name and limit are required' });
         }
 
-        // UPSERT: If category exists, update limit; otherwise insert new category
         const result = await pool.query(
             `INSERT INTO categories (user_id, name, target_limit) 
              VALUES ($1, $2, $3) 
