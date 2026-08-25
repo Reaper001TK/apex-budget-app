@@ -3,137 +3,177 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ApexBudget SQL - Database Powered</title>
+    <title>ApexBudget - Multi-User SaaS</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
 
-    <!-- Header -->
-    <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap justify-between items-center gap-4">
-            <div class="flex items-center space-x-3">
-                <div class="p-2 bg-blue-600 rounded-lg text-white font-bold text-xl">🗄️</div>
-                <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">ApexBudget SQL</h1>
-            </div>
-            <nav class="flex space-x-2 bg-slate-900 p-1 rounded-xl border border-slate-700 text-sm">
-                <button onclick="switchTab('dashboard')" id="tab-dashboard" class="px-4 py-2 rounded-lg text-white bg-blue-600">Dashboard</button>
-                <button onclick="switchTab('budget')" id="tab-budget" class="px-4 py-2 rounded-lg text-slate-400 hover:text-white">Categories</button>
-                <button onclick="switchTab('transactions')" id="tab-transactions" class="px-4 py-2 rounded-lg text-slate-400 hover:text-white">Transactions</button>
-            </nav>
-        </div>
-    </header>
-
-    <!-- Main Content -->
-    <main class="max-w-7xl mx-auto px-4 py-6 flex-grow w-full">
-        
-        <!-- DASHBOARD -->
-        <div id="view-dashboard" class="space-y-6">
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
-                    <p class="text-xs uppercase font-semibold text-slate-400">Total Income</p>
-                    <p id="stat-income" class="text-2xl font-bold text-emerald-400 mt-2">$0.00</p>
-                </div>
-                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
-                    <p class="text-xs uppercase font-semibold text-slate-400">Total Expenses</p>
-                    <p id="stat-expenses" class="text-2xl font-bold text-rose-400 mt-2">$0.00</p>
-                </div>
-                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
-                    <p class="text-xs uppercase font-semibold text-slate-400">Net Savings</p>
-                    <p id="stat-savings" class="text-2xl font-bold text-blue-400 mt-2">$0.00</p>
-                </div>
-                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
-                    <p class="text-xs uppercase font-semibold text-slate-400">Savings Rate</p>
-                    <p id="stat-rate" class="text-2xl font-bold text-indigo-400 mt-2">0%</p>
-                </div>
+    <!-- AUTH SCREEN (Login / Sign Up) -->
+    <div id="view-auth" class="min-h-screen flex items-center justify-center p-4">
+        <div class="bg-slate-800 border border-slate-700 p-8 rounded-2xl w-full max-w-md space-y-6 shadow-2xl">
+            <div class="text-center space-y-2">
+                <div class="inline-block p-3 bg-blue-600 rounded-2xl text-2xl mb-1">⚡</div>
+                <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">ApexBudget SaaS</h1>
+                <p id="auth-subtitle" class="text-xs text-slate-400">Sign in to manage your personal finances</p>
             </div>
 
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
-                    <h3 class="font-bold mb-4">Expense Categories</h3>
-                    <div class="h-64 flex justify-center"><canvas id="categoryChart"></canvas></div>
-                </div>
-                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
-                    <h3 class="font-bold mb-4">Budget Caps vs Actual Spend</h3>
-                    <div class="h-64"><canvas id="comparisonChart"></canvas></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- CATEGORIES -->
-        <div id="view-budget" class="hidden space-y-6">
-            <div class="flex justify-between items-center bg-slate-800 border border-slate-700 p-4 rounded-xl">
+            <form id="auth-form" onsubmit="handleAuthSubmit(event)" class="space-y-4">
                 <div>
-                    <h2 class="text-lg font-bold">Category Budget Planner</h2>
-                    <p class="text-xs text-slate-400">Change any budget limit below and press Enter (or click out) to save.</p>
+                    <label class="block text-xs font-semibold text-slate-400 mb-1">Email Address</label>
+                    <input type="email" id="auth-email" required placeholder="name@example.com" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
                 </div>
-                <button onclick="document.getElementById('cat-modal').classList.remove('hidden')" class="bg-blue-600 hover:bg-blue-700 text-sm font-semibold px-4 py-2 rounded-lg">+ Add Category</button>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 mb-1">Password</label>
+                    <input type="password" id="auth-password" required placeholder="••••••••" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
+                </div>
+
+                <div id="auth-error" class="hidden text-xs text-rose-400 bg-rose-500/10 p-2 rounded-lg border border-rose-500/20 text-center"></div>
+
+                <button type="submit" id="auth-submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 font-semibold py-2.5 rounded-lg text-sm transition">Sign In</button>
+            </form>
+
+            <div class="text-center pt-2 text-xs text-slate-400">
+                <span id="auth-toggle-text">Don't have an account?</span>
+                <button onclick="toggleAuthMode()" id="auth-toggle-btn" class="text-blue-400 font-semibold hover:underline ml-1">Create Account</button>
             </div>
-            <div id="budget-progress-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
         </div>
+    </div>
 
-        <!-- TRANSACTIONS -->
-        <div id="view-transactions" class="hidden space-y-6">
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl h-fit">
-                    <h3 class="font-bold text-lg mb-4">Add to Database</h3>
-                    <form onsubmit="handleAddTransaction(event)" class="space-y-4">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1">Description</label>
-                            <input type="text" id="tx-desc" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-400 mb-1">Amount ($)</label>
-                                <input type="number" step="0.01" id="tx-amount" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-400 mb-1">Type</label>
-                                <select id="tx-type" onchange="toggleCategoryForType()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
-                                    <option value="expense">Expense</option>
-                                    <option value="income">Income</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1">Category</label>
-                            <select id="tx-category" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white"></select>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1">Date</label>
-                            <input type="date" id="tx-date" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
-                        </div>
-                        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 font-semibold py-2 rounded-lg text-sm">Save Transaction</button>
-                    </form>
+    <!-- MAIN APP SCREEN (Shown after Login) -->
+    <div id="view-main" class="hidden min-h-screen flex flex-col">
+        <!-- Header / Navbar -->
+        <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
+            <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap justify-between items-center gap-4">
+                <div class="flex items-center space-x-3">
+                    <div class="p-2 bg-blue-600 rounded-lg text-white font-bold text-xl">⚡</div>
+                    <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">ApexBudget</h1>
+                </div>
+                
+                <nav class="flex space-x-2 bg-slate-900 p-1 rounded-xl border border-slate-700 text-sm">
+                    <button onclick="switchTab('dashboard')" id="tab-dashboard" class="px-4 py-2 rounded-lg text-white bg-blue-600">Dashboard</button>
+                    <button onclick="switchTab('budget')" id="tab-budget" class="px-4 py-2 rounded-lg text-slate-400 hover:text-white">Categories</button>
+                    <button onclick="switchTab('transactions')" id="tab-transactions" class="px-4 py-2 rounded-lg text-slate-400 hover:text-white">Transactions</button>
+                </nav>
+
+                <div class="flex items-center space-x-3">
+                    <span id="user-email-display" class="text-xs text-slate-400 font-mono hidden md:inline"></span>
+                    <button onclick="logout()" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-2 rounded-lg text-slate-200 transition">Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="max-w-7xl mx-auto px-4 py-6 flex-grow w-full">
+            
+            <!-- DASHBOARD -->
+            <div id="view-dashboard" class="space-y-6">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                        <p class="text-xs uppercase font-semibold text-slate-400">Total Income</p>
+                        <p id="stat-income" class="text-2xl font-bold text-emerald-400 mt-2">$0.00</p>
+                    </div>
+                    <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                        <p class="text-xs uppercase font-semibold text-slate-400">Total Expenses</p>
+                        <p id="stat-expenses" class="text-2xl font-bold text-rose-400 mt-2">$0.00</p>
+                    </div>
+                    <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                        <p class="text-xs uppercase font-semibold text-slate-400">Net Savings</p>
+                        <p id="stat-savings" class="text-2xl font-bold text-blue-400 mt-2">$0.00</p>
+                    </div>
+                    <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                        <p class="text-xs uppercase font-semibold text-slate-400">Savings Rate</p>
+                        <p id="stat-rate" class="text-2xl font-bold text-indigo-400 mt-2">0%</p>
+                    </div>
                 </div>
 
-                <div class="lg:col-span-2 bg-slate-800 border border-slate-700 p-5 rounded-2xl">
-                    <h3 class="font-bold text-lg mb-4">Database Log</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm text-slate-300">
-                            <thead class="bg-slate-900 text-xs text-slate-400 uppercase">
-                                <tr>
-                                    <th class="p-3">Date</th>
-                                    <th class="p-3">Description</th>
-                                    <th class="p-3">Category</th>
-                                    <th class="p-3 text-right">Amount</th>
-                                    <th class="p-3 text-center">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody id="transaction-rows" class="divide-y divide-slate-700"></tbody>
-                        </table>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                        <h3 class="font-bold mb-4">Expense Categories</h3>
+                        <div class="h-64 flex justify-center"><canvas id="categoryChart"></canvas></div>
+                    </div>
+                    <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                        <h3 class="font-bold mb-4">Budget Caps vs Actual Spend</h3>
+                        <div class="h-64"><canvas id="comparisonChart"></canvas></div>
                     </div>
                 </div>
             </div>
-        </div>
-    </main>
 
-    <!-- Modal -->
-    <div id="cat-modal" class="fixed inset-0 bg-black/70 flex items-center justify-center hidden">
+            <!-- CATEGORIES -->
+            <div id="view-budget" class="hidden space-y-6">
+                <div class="flex justify-between items-center bg-slate-800 border border-slate-700 p-4 rounded-xl">
+                    <div>
+                        <h2 class="text-lg font-bold">Category Budget Planner</h2>
+                        <p class="text-xs text-slate-400">Change any budget limit below and press Enter to save.</p>
+                    </div>
+                    <button onclick="document.getElementById('cat-modal').classList.remove('hidden')" class="bg-blue-600 hover:bg-blue-700 text-sm font-semibold px-4 py-2 rounded-lg">+ Add Category</button>
+                </div>
+                <div id="budget-progress-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            </div>
+
+            <!-- TRANSACTIONS -->
+            <div id="view-transactions" class="hidden space-y-6">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl h-fit">
+                        <h3 class="font-bold text-lg mb-4">Add Transaction</h3>
+                        <form onsubmit="handleAddTransaction(event)" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-400 mb-1">Description</label>
+                                <input type="text" id="tx-desc" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-400 mb-1">Amount ($)</label>
+                                    <input type="number" step="0.01" id="tx-amount" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-400 mb-1">Type</label>
+                                    <select id="tx-type" onchange="toggleCategoryForType()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                                        <option value="expense">Expense</option>
+                                        <option value="income">Income</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-400 mb-1">Category</label>
+                                <select id="tx-category" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white"></select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-400 mb-1">Date</label>
+                                <input type="date" id="tx-date" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                            </div>
+                            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 font-semibold py-2 rounded-lg text-sm">Save Transaction</button>
+                        </form>
+                    </div>
+
+                    <div class="lg:col-span-2 bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                        <h3 class="font-bold text-lg mb-4">Transaction History</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-sm text-slate-300">
+                                <thead class="bg-slate-900 text-xs text-slate-400 uppercase">
+                                    <tr>
+                                        <th class="p-3">Date</th>
+                                        <th class="p-3">Description</th>
+                                        <th class="p-3">Category</th>
+                                        <th class="p-3 text-right">Amount</th>
+                                        <th class="p-3 text-center">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="transaction-rows" class="divide-y divide-slate-700"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Add Category Modal -->
+    <div id="cat-modal" class="fixed inset-0 bg-black/70 flex items-center justify-center hidden z-50">
         <div class="bg-slate-800 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4">
-            <h3 class="text-lg font-bold">New SQL Category</h3>
+            <h3 class="text-lg font-bold">New Category</h3>
             <input type="text" id="cat-name" placeholder="Category Name" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
-            <input type="number" id="cat-limit" placeholder="Limit ($)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+            <input type="number" id="cat-limit" placeholder="Target Limit ($)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
             <div class="flex justify-end space-x-2">
                 <button onclick="document.getElementById('cat-modal').classList.add('hidden')" class="px-4 py-2 text-xs bg-slate-700 rounded-lg">Cancel</button>
                 <button onclick="saveCategory()" class="px-4 py-2 text-xs bg-blue-600 font-semibold rounded-lg">Save</button>
@@ -143,20 +183,106 @@
 
     <script>
         let categoryChart, comparisonChart;
+        let isLoginMode = true;
 
         document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('tx-date').valueAsDate = new Date();
-            loadAllData();
+            const token = localStorage.getItem('apex_token');
+            if (token) {
+                showApp();
+            } else {
+                showAuth();
+            }
         });
 
+        // AUTHENTICATION LOGIC
+        function toggleAuthMode() {
+            isLoginMode = !isLoginMode;
+            document.getElementById('auth-subtitle').innerText = isLoginMode ? 'Sign in to manage your personal finances' : 'Create a new personal budget account';
+            document.getElementById('auth-submit-btn').innerText = isLoginMode ? 'Sign In' : 'Create Account';
+            document.getElementById('auth-toggle-text').innerText = isLoginMode ? "Don't have an account?" : 'Already have an account?';
+            document.getElementById('auth-toggle-btn').innerText = isLoginMode ? 'Create Account' : 'Sign In';
+            document.getElementById('auth-error').classList.add('hidden');
+        }
+
+        async function handleAuthSubmit(e) {
+            e.preventDefault();
+            const email = document.getElementById('auth-email').value;
+            const password = document.getElementById('auth-password').value;
+            const errorDiv = document.getElementById('auth-error');
+            errorDiv.classList.add('hidden');
+
+            const endpoint = isLoginMode ? '/api/auth/login' : '/api/auth/register';
+
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await res.json();
+                if (!res.ok) {
+                    errorDiv.innerText = data.error || 'Authentication failed.';
+                    errorDiv.classList.remove('hidden');
+                    return;
+                }
+
+                localStorage.setItem('apex_token', data.token);
+                localStorage.setItem('apex_user_email', data.user.email);
+                showApp();
+            } catch (err) {
+                errorDiv.innerText = 'Network error. Please try again.';
+                errorDiv.classList.remove('hidden');
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('apex_token');
+            localStorage.removeItem('apex_user_email');
+            showAuth();
+        }
+
+        function showAuth() {
+            document.getElementById('view-auth').classList.remove('hidden');
+            document.getElementById('view-main').classList.add('hidden');
+        }
+
+        function showApp() {
+            document.getElementById('view-auth').classList.add('hidden');
+            document.getElementById('view-main').classList.remove('hidden');
+            document.getElementById('user-email-display').innerText = localStorage.getItem('apex_user_email') || '';
+            document.getElementById('tx-date').valueAsDate = new Date();
+            loadAllData();
+        }
+
+        // AUTHENTICATED FETCH HELPER
+        async function authFetch(url, options = {}) {
+            const token = localStorage.getItem('apex_token');
+            const headers = {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+                ...options.headers
+            };
+
+            const res = await fetch(url, { ...options, headers });
+            if (res.status === 401 || res.status === 403) {
+                logout();
+                throw new Error('Session expired');
+            }
+            return res;
+        }
+
+        // DATA LOADING & RENDERING
         async function loadAllData() {
-            await renderSummary();
-            await renderCategories();
-            await renderTransactions();
+            try {
+                await renderSummary();
+                await renderCategories();
+                await renderTransactions();
+            } catch (e) { console.error(e); }
         }
 
         async function renderSummary() {
-            const res = await fetch('/api/summary');
+            const res = await authFetch('/api/summary');
             const data = await res.json();
             document.getElementById('stat-income').innerText = `$${data.income.toFixed(2)}`;
             document.getElementById('stat-expenses').innerText = `$${data.expenses.toFixed(2)}`;
@@ -165,14 +291,12 @@
         }
 
         async function renderCategories() {
-            const res = await fetch('/api/categories');
+            const res = await authFetch('/api/categories');
             const categories = await res.json();
 
-            // Populate Dropdown
             const select = document.getElementById('tx-category');
             select.innerHTML = '<option value="Income">Income</option>' + categories.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
 
-            // Render Progress Cards
             const container = document.getElementById('budget-progress-container');
             container.innerHTML = categories.map(cat => {
                 const percent = Math.min(Math.round((cat.total_spent / cat.target_limit) * 100), 100);
@@ -209,26 +333,17 @@
         async function updateCategoryBudget(id, newLimit) {
             const limit = parseFloat(newLimit);
             if (!isNaN(limit) && limit >= 0) {
-                try {
-                    const res = await fetch(`/api/categories/${id}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ limit })
-                    });
-                    if (!res.ok) {
-                        alert("Please restart your server in terminal (Ctrl+C then npm start)");
-                        return;
-                    }
-                    await loadAllData();
-                } catch (err) {
-                    console.error("Error updating budget:", err);
-                }
+                await authFetch(`/api/categories/${id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ limit })
+                });
+                loadAllData();
             }
         }
 
         async function deleteCategory(id) {
             if (confirm("Delete this category?")) {
-                await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+                await authFetch(`/api/categories/${id}`, { method: 'DELETE' });
                 loadAllData();
             }
         }
@@ -242,7 +357,7 @@
         }
 
         async function renderTransactions() {
-            const res = await fetch('/api/transactions');
+            const res = await authFetch('/api/transactions');
             const transactions = await res.json();
 
             document.getElementById('transaction-rows').innerHTML = transactions.map(t => `
@@ -270,9 +385,8 @@
                 date: document.getElementById('tx-date').value
             };
 
-            await fetch('/api/transactions', {
+            await authFetch('/api/transactions', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
 
@@ -285,9 +399,8 @@
             const name = document.getElementById('cat-name').value;
             const limit = parseFloat(document.getElementById('cat-limit').value);
             if (name && limit) {
-                await fetch('/api/categories', {
+                await authFetch('/api/categories', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name, limit })
                 });
                 document.getElementById('cat-modal').classList.add('hidden');
@@ -296,7 +409,7 @@
         }
 
         async function deleteTx(id) {
-            await fetch(`/api/transactions/${id}`, { method: 'DELETE' });
+            await authFetch(`/api/transactions/${id}`, { method: 'DELETE' });
             loadAllData();
         }
 
