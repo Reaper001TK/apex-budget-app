@@ -396,15 +396,40 @@
         }
 
         async function saveCategory() {
-            const name = document.getElementById('cat-name').value;
-            const limit = parseFloat(document.getElementById('cat-limit').value);
-            if (name && limit) {
-                await authFetch('/api/categories', {
+            const nameInput = document.getElementById('cat-name');
+            const limitInput = document.getElementById('cat-limit');
+            const name = nameInput.value.trim();
+            const limit = parseFloat(limitInput.value);
+
+            if (!name) {
+                alert("Please enter a category name.");
+                return;
+            }
+            if (isNaN(limit) || limit < 0) {
+                alert("Please enter a valid budget amount.");
+                return;
+            }
+
+            try {
+                const res = await authFetch('/api/categories', {
                     method: 'POST',
                     body: JSON.stringify({ name, limit })
                 });
+
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(data.error || "Failed to create category.");
+                    return;
+                }
+
+                // Clear inputs & close modal
+                nameInput.value = '';
+                limitInput.value = '';
                 document.getElementById('cat-modal').classList.add('hidden');
                 loadAllData();
+            } catch (err) {
+                console.error("Save Category Error:", err);
+                alert("An error occurred while saving the category.");
             }
         }
 

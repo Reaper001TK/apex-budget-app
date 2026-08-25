@@ -69,14 +69,13 @@ function authenticateToken(req, res, next) {
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) return res.status(403).json({ error: 'Session expired or invalid. Please log in again.' });
-        req.user = user; // Contains user.id and user.email
+        req.user = user;
         next();
     });
 }
 
 // --- AUTHENTICATION ROUTES ---
 
-// 1. Register User
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -110,7 +109,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// 2. Login User
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -174,9 +172,18 @@ app.get('/api/categories', authenticateToken, async (req, res) => {
 app.post('/api/categories', authenticateToken, async (req, res) => {
     try {
         const { name, limit } = req.body;
+        if (!name || isNaN(limit)) {
+            return res.status(400).json({ error: 'Valid category name and limit are required' });
+        }
+
+        // UPSERT: If category exists, update limit; otherwise insert new category
         const result = await pool.query(
-            'INSERT INTO categories (user_id, name, target_limit) VALUES ($1, $2, $3) RETURNING *',
-            [req.user.id, name, limit]
+            `INSERT INTO categories (user_id, name, target_limit) 
+             VALUES ($1, $2, $3) 
+             ON CONFLICT (user_id, name) 
+             DO UPDATE SET target_limit = EXCLUDED.target_limit 
+             RETURNING *`,
+            [req.user.id, name.trim(), limit]
         );
         res.json(result.rows[0]);
     } catch (err) {
