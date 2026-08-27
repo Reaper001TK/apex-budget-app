@@ -55,8 +55,9 @@
                     <button onclick="switchTab('transactions')" id="tab-transactions" class="px-4 py-2 rounded-lg text-slate-400 hover:text-white">Transactions</button>
                 </nav>
 
-                <div class="flex items-center space-x-3">
-                    <span id="user-email-display" class="text-xs text-slate-400 font-mono hidden md:inline"></span>
+                <div class="flex items-center space-x-2">
+                    <button onclick="openHelpModal()" class="bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs px-3 py-2 rounded-lg font-semibold transition">📖 Quick Guide</button>
+                    <span id="user-email-display" class="text-xs text-slate-400 font-mono hidden lg:inline"></span>
                     <button onclick="logout()" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-2 rounded-lg text-slate-200 transition">Logout</button>
                 </div>
             </div>
@@ -66,6 +67,15 @@
             
             <!-- DASHBOARD -->
             <div id="view-dashboard" class="space-y-6">
+                <!-- Banner Callout -->
+                <div class="bg-gradient-to-r from-blue-900/40 to-indigo-900/40 border border-blue-500/30 p-4 rounded-2xl flex flex-wrap justify-between items-center gap-3">
+                    <div>
+                        <h3 class="font-bold text-slate-100 text-sm">Welcome to ApexBudget! 👋</h3>
+                        <p class="text-xs text-slate-300">Track spending, set monthly budget caps, and store receipt photos securely in the cloud.</p>
+                    </div>
+                    <button onclick="openHelpModal()" class="bg-blue-600 hover:bg-blue-700 text-xs text-white px-3 py-2 rounded-lg font-semibold transition">View 1-Min Tutorial</button>
+                </div>
+
                 <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                     <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
                         <p class="text-xs uppercase font-semibold text-slate-400">Total Income</p>
@@ -117,12 +127,12 @@
                         <form onsubmit="handleAddTransaction(event)" class="space-y-4">
                             <div>
                                 <label class="block text-xs font-semibold text-slate-400 mb-1">Description</label>
-                                <input type="text" id="tx-desc" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                                <input type="text" id="tx-desc" required placeholder="e.g. Grocery Store" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
                             </div>
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-400 mb-1">Amount ($)</label>
-                                    <input type="number" step="0.01" id="tx-amount" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                                    <input type="number" step="0.01" id="tx-amount" required placeholder="0.00" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
                                 </div>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-400 mb-1">Type</label>
@@ -178,6 +188,63 @@
         </main>
     </div>
 
+    <!-- MODAL: TUTORIAL / QUICK GUIDE -->
+    <div id="help-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center hidden z-50 p-4">
+        <div class="bg-slate-800 border border-slate-700 p-6 rounded-2xl max-w-2xl w-full space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center border-b border-slate-700 pb-4">
+                <div class="flex items-center space-x-2">
+                    <span class="p-2 bg-blue-600 rounded-lg text-lg">📖</span>
+                    <h3 class="text-xl font-bold text-white">How to Use ApexBudget</h3>
+                </div>
+                <button onclick="closeHelpModal()" class="text-slate-400 hover:text-white text-xl">✕</button>
+            </div>
+
+            <!-- Tutorial Steps -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="bg-slate-900 border border-slate-700/60 p-4 rounded-xl space-y-2">
+                    <div class="flex items-center space-x-2 text-blue-400 font-bold text-sm">
+                        <span class="bg-blue-600/20 px-2 py-0.5 rounded border border-blue-500/30">Step 1</span>
+                        <span>Set Monthly Budgets</span>
+                    </div>
+                    <p class="text-xs text-slate-300">Click the <strong class="text-white">Categories</strong> tab to set spending caps for Groceries, Fun, Utilities, etc. Edit any limit directly in the box and press Enter!</p>
+                </div>
+
+                <div class="bg-slate-900 border border-slate-700/60 p-4 rounded-xl space-y-2">
+                    <div class="flex items-center space-x-2 text-emerald-400 font-bold text-sm">
+                        <span class="bg-emerald-600/20 px-2 py-0.5 rounded border border-emerald-500/30">Step 2</span>
+                        <span>Log Income & Expenses</span>
+                    </div>
+                    <p class="text-xs text-slate-300">Go to the <strong class="text-white">Transactions</strong> tab to log earnings or spent money. Pick your category and select whether it's an Income or Expense.</p>
+                </div>
+
+                <div class="bg-slate-900 border border-slate-700/60 p-4 rounded-xl space-y-2">
+                    <div class="flex items-center space-x-2 text-purple-400 font-bold text-sm">
+                        <span class="bg-purple-600/20 px-2 py-0.5 rounded border border-purple-500/30">Step 3</span>
+                        <span>Snap & Save Receipts</span>
+                    </div>
+                    <p class="text-xs text-slate-300">Use the <strong class="text-white">Attach Receipt</strong> option on your phone camera or computer. Click <strong class="text-white">📷 View</strong> on any transaction to inspect or download photos later!</p>
+                </div>
+
+                <div class="bg-slate-900 border border-slate-700/60 p-4 rounded-xl space-y-2">
+                    <div class="flex items-center space-x-2 text-indigo-400 font-bold text-sm">
+                        <span class="bg-indigo-600/20 px-2 py-0.5 rounded border border-indigo-500/30">Step 4</span>
+                        <span>Monitor Live Analytics</span>
+                    </div>
+                    <p class="text-xs text-slate-300">Check the <strong class="text-white">Dashboard</strong> to see your total savings, savings rate %, expense breakdown doughnut chart, and target vs actual spending bars.</p>
+                </div>
+            </div>
+
+            <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700 text-xs text-slate-400 flex items-center gap-2">
+                <span>🔒</span>
+                <span>Your budget data and receipt photos are securely saved under your account in PostgreSQL and isolated from other users.</span>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button onclick="closeHelpModal()" class="w-full md:w-auto bg-blue-600 hover:bg-blue-700 font-semibold px-6 py-2.5 rounded-lg text-sm text-white transition">Got it! Let's start</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal: Add Category -->
     <div id="cat-modal" class="fixed inset-0 bg-black/70 flex items-center justify-center hidden z-50">
         <div class="bg-slate-800 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4">
@@ -219,6 +286,15 @@
             if (token) showApp();
             else showAuth();
         });
+
+        // TUTORIAL MODAL HELPERS
+        function openHelpModal() {
+            document.getElementById('help-modal').classList.remove('hidden');
+        }
+
+        function closeHelpModal() {
+            document.getElementById('help-modal').classList.add('hidden');
+        }
 
         // PHOTO COMPRESSION HELPER
         function handleReceiptSelect(e) {
@@ -308,7 +384,7 @@
 
                 localStorage.setItem('apex_token', data.token);
                 localStorage.setItem('apex_user_email', data.user.email);
-                showApp();
+                showApp(true); // pass true to trigger onboarding check
             } catch (err) {
                 errorDiv.innerText = 'Network error. Please try again.';
                 errorDiv.classList.remove('hidden');
@@ -326,12 +402,19 @@
             document.getElementById('view-main').classList.add('hidden');
         }
 
-        function showApp() {
+        function showApp(isNewSession = false) {
             document.getElementById('view-auth').classList.add('hidden');
             document.getElementById('view-main').classList.remove('hidden');
             document.getElementById('user-email-display').innerText = localStorage.getItem('apex_user_email') || '';
             document.getElementById('tx-date').valueAsDate = new Date();
             loadAllData();
+
+            // Auto-open tutorial modal if first time viewing app
+            const hasSeenGuide = localStorage.getItem('apex_guide_seen');
+            if (isNewSession && !hasSeenGuide) {
+                openHelpModal();
+                localStorage.setItem('apex_guide_seen', 'true');
+            }
         }
 
         async function authFetch(url, options = {}) {
