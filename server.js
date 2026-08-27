@@ -81,7 +81,6 @@ async function initDb() {
             );
         `);
 
-        // New Table: Savings Goals
         await pool.query(`
             CREATE TABLE IF NOT EXISTS savings_goals (
                 id SERIAL PRIMARY KEY,
@@ -93,7 +92,6 @@ async function initDb() {
             );
         `);
 
-        // New Table: Recurring Bills
         await pool.query(`
             CREATE TABLE IF NOT EXISTS recurring_bills (
                 id SERIAL PRIMARY KEY,
@@ -106,7 +104,18 @@ async function initDb() {
             );
         `);
 
-        console.log('⚡ PostgreSQL Multi-User Schema with Goals & Subscriptions Ready!');
+        // New Table: Financial Accounts & Net Worth Tracker
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS financial_accounts (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                type TEXT CHECK(type IN ('checking', 'savings', 'investment', 'credit_card', 'loan')) NOT NULL,
+                balance NUMERIC DEFAULT 0
+            );
+        `);
+
+        console.log('⚡ PostgreSQL Multi-User Schema with Accounts & AI Insights Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -145,6 +154,7 @@ app.post('/api/auth/register', async (req, res) => {
         );
         const user = userRes.rows[0];
 
+        // Seed default starter categories
         await pool.query(`
             INSERT INTO categories (user_id, name, target_limit) VALUES
             ($1, 'Housing & Utilities', 1500),
@@ -152,6 +162,14 @@ app.post('/api/auth/register', async (req, res) => {
             ($1, 'Dining & Fun', 300),
             ($1, 'Investments & Savings', 1000),
             ($1, 'Transportation', 250);
+        `, [user.id]);
+
+        // Seed starter accounts
+        await pool.query(`
+            INSERT INTO financial_accounts (user_id, name, type, balance) VALUES
+            ($1, 'Primary Checking', 'checking', 2500),
+            ($1, 'Emergency Savings', 'savings', 5000),
+            ($1, 'Main Credit Card', 'credit_card', 450);
         `, [user.id]);
 
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
@@ -180,7 +198,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// --- SUMMARY API (With Month Filter) ---
+// --- SUMMARY API ---
 
 app.get('/api/summary', authenticateToken, async (req, res) => {
     try {
@@ -204,7 +222,7 @@ app.get('/api/summary', authenticateToken, async (req, res) => {
     }
 });
 
-// --- CATEGORIES API (With Month Filter) ---
+// --- CATEGORIES API ---
 
 app.get('/api/categories', authenticateToken, async (req, res) => {
     try {
@@ -379,6 +397,46 @@ app.delete('/api/recurring/:id', authenticateToken, async (req, res) => {
     try {
         const id = parseInt(req.params.id);
         await pool.query('DELETE FROM recurring_bills WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        res.json({ success: true, deletedId: id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --- FINANCIAL ACCOUNTS / NET WORTH API ---
+
+app.get('/api/accounts', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT id, name, type, balance::float FROM financial_accounts WHERE user_id = $1 ORDER BY id ASC', [req.user.id]);
+        res.json(result.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/accounts', authenticateToken, async (req, res) => {
+    try {
+        const { name, type, balance } = req.body;
+        const result = await pool.query(
+            'INSERT INTO financial_accounts (user_id, name, type, balance) VALUES ($1, $2, $3, $4) RETURNING *',
+            [req.user.id, name, type, balance || 0]
+        );
+        res.json(result.rows[0]);
+    } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.put('/api/accounts/:id', authenticateToken, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const { balance } = req.body;
+        const result = await pool.query(
+            'UPDATE financial_accounts SET balance = $1 WHERE id = $2 AND user_id = $3 RETURNING *',
+            [balance, id, req.user.id]
+        );
+        res.json(result.rows[0]);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/accounts/:id', authenticateToken, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        await pool.query('DELETE FROM financial_accounts WHERE id = $1 AND user_id = $2', [id, req.user.id]);
         res.json({ success: true, deletedId: id });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
