@@ -9,7 +9,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'apex_budget_super_secret_jwt_key_2026';
 
-// Middleware (Increased payload limit to 10MB to handle photo uploads)
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
@@ -33,7 +32,7 @@ async function initDb() {
             );
         `);
 
-        // Migration: ensure categories table has user_id
+        // Migration check for categories
         await pool.query(`
             DO $$ 
             BEGIN 
@@ -65,8 +64,7 @@ async function initDb() {
                 ) THEN
                     ALTER TABLE categories ADD CONSTRAINT categories_user_id_name_key UNIQUE (user_id, name);
                 END IF;
-            EXCEPTION
-                WHEN OTHERS THEN NULL;
+            EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
         `);
 
@@ -83,19 +81,32 @@ async function initDb() {
             );
         `);
 
-        // Migration: Add receipt_image column if missing
+        // New Table: Savings Goals
         await pool.query(`
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns WHERE table_name='transactions' AND column_name='receipt_image'
-                ) THEN
-                    ALTER TABLE transactions ADD COLUMN receipt_image TEXT;
-                END IF;
-            END $$;
+            CREATE TABLE IF NOT EXISTS savings_goals (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                target_amount NUMERIC NOT NULL,
+                current_amount NUMERIC DEFAULT 0,
+                target_date TEXT
+            );
         `);
 
-        console.log('⚡ PostgreSQL Multi-User Schema with Receipts Ready!');
+        // New Table: Recurring Bills
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS recurring_bills (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                amount NUMERIC NOT NULL,
+                billing_cycle TEXT CHECK(billing_cycle IN ('monthly', 'yearly')) DEFAULT 'monthly',
+                category_name TEXT NOT NULL,
+                due_day INTEGER DEFAULT 1
+            );
+        `);
+
+        console.log('⚡ PostgreSQL Multi-User Schema with Goals & Subscriptions Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -116,7 +127,7 @@ function authenticateToken(req, res, next) {
     });
 }
 
-// --- AUTHENTICATION ROUTES ---
+// --- AUTH ROUTES ---
 
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -169,41 +180,48 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// --- PROTECTED USER API ENDPOINTS ---
+// --- SUMMARY API (With Month Filter) ---
 
 app.get('/api/summary', authenticateToken, async (req, res) => {
     try {
+        const month = req.query.month || new Date().toISOString().slice(0, 7);
         const query = `
             SELECT 
                 COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0) AS total_income,
                 COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0) AS total_expenses
             FROM transactions
-            WHERE user_id = $1;
+            WHERE user_id = $1 AND date LIKE $2 || '%';
         `;
-        const result = await pool.query(query, [req.user.id]);
+        const result = await pool.query(query, [req.user.id, month]);
         const income = parseFloat(result.rows[0].total_income);
         const expenses = parseFloat(result.rows[0].total_expenses);
         const savings = income - expenses;
         const savingsRate = income > 0 ? ((savings / income) * 100).toFixed(1) : 0;
 
-        res.json({ income, expenses, savings, savingsRate: parseFloat(savingsRate) });
+        res.json({ income, expenses, savings, savingsRate: parseFloat(savingsRate), month });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
+// --- CATEGORIES API (With Month Filter) ---
+
 app.get('/api/categories', authenticateToken, async (req, res) => {
     try {
+        const month = req.query.month || new Date().toISOString().slice(0, 7);
         const query = `
             SELECT c.id, c.name, c.target_limit::float AS target_limit,
                    COALESCE(SUM(t.amount), 0)::float AS total_spent
             FROM categories c
-            LEFT JOIN transactions t ON t.category_name = c.name AND t.user_id = c.user_id AND t.type = 'expense'
+            LEFT JOIN transactions t ON t.category_name = c.name 
+                                    AND t.user_id = c.user_id 
+                                    AND t.type = 'expense'
+                                    AND t.date LIKE $2 || '%'
             WHERE c.user_id = $1
             GROUP BY c.id, c.name, c.target_limit
             ORDER BY c.id ASC;
         `;
-        const result = await pool.query(query, [req.user.id]);
+        const result = await pool.query(query, [req.user.id, month]);
         res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -213,9 +231,7 @@ app.get('/api/categories', authenticateToken, async (req, res) => {
 app.post('/api/categories', authenticateToken, async (req, res) => {
     try {
         const { name, limit } = req.body;
-        if (!name || isNaN(limit)) {
-            return res.status(400).json({ error: 'Valid category name and limit are required' });
-        }
+        if (!name || isNaN(limit)) return res.status(400).json({ error: 'Valid category name and limit are required' });
 
         const result = await pool.query(
             `INSERT INTO categories (user_id, name, target_limit) 
@@ -255,12 +271,21 @@ app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
     }
 });
 
+// --- TRANSACTIONS API ---
+
 app.get('/api/transactions', authenticateToken, async (req, res) => {
     try {
-        const result = await pool.query(
-            'SELECT id, description, amount::float, type, category_name, date, receipt_image FROM transactions WHERE user_id = $1 ORDER BY date DESC, id DESC',
-            [req.user.id]
-        );
+        const month = req.query.month;
+        let query = 'SELECT id, description, amount::float, type, category_name, date, receipt_image FROM transactions WHERE user_id = $1';
+        let params = [req.user.id];
+        
+        if (month) {
+            query += ' AND date LIKE $2 || \'%\'';
+            params.push(month);
+        }
+        
+        query += ' ORDER BY date DESC, id DESC';
+        const result = await pool.query(query, params);
         res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -288,6 +313,74 @@ app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// --- SAVINGS GOALS API ---
+
+app.get('/api/goals', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT id, title, target_amount::float, current_amount::float, target_date FROM savings_goals WHERE user_id = $1 ORDER BY id ASC', [req.user.id]);
+        res.json(result.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/goals', authenticateToken, async (req, res) => {
+    try {
+        const { title, target_amount, current_amount, target_date } = req.body;
+        const result = await pool.query(
+            'INSERT INTO savings_goals (user_id, title, target_amount, current_amount, target_date) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [req.user.id, title, target_amount, current_amount || 0, target_date || null]
+        );
+        res.json(result.rows[0]);
+    } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.put('/api/goals/:id', authenticateToken, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const { current_amount } = req.body;
+        const result = await pool.query(
+            'UPDATE savings_goals SET current_amount = $1 WHERE id = $2 AND user_id = $3 RETURNING *',
+            [current_amount, id, req.user.id]
+        );
+        res.json(result.rows[0]);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/goals/:id', authenticateToken, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        await pool.query('DELETE FROM savings_goals WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        res.json({ success: true, deletedId: id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --- RECURRING BILLS API ---
+
+app.get('/api/recurring', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT id, name, amount::float, billing_cycle, category_name, due_day FROM recurring_bills WHERE user_id = $1 ORDER BY due_day ASC', [req.user.id]);
+        res.json(result.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/recurring', authenticateToken, async (req, res) => {
+    try {
+        const { name, amount, billing_cycle, category_name, due_day } = req.body;
+        const result = await pool.query(
+            'INSERT INTO recurring_bills (user_id, name, amount, billing_cycle, category_name, due_day) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+            [req.user.id, name, amount, billing_cycle || 'monthly', category_name, due_day || 1]
+        );
+        res.json(result.rows[0]);
+    } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.delete('/api/recurring/:id', authenticateToken, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        await pool.query('DELETE FROM recurring_bills WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        res.json({ success: true, deletedId: id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.listen(PORT, () => console.log(`🚀 Multi-User Budget App running on http://localhost:${PORT}`));
