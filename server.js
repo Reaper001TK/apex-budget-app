@@ -9,8 +9,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'apex_budget_super_secret_jwt_key_2026';
 
+// Middleware (Increased payload limit to 10MB to handle photo uploads)
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Connect to PostgreSQL Database
@@ -19,7 +21,7 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Initialize Relational Schema with Auto-Migration
+// Initialize Relational Schema & Migration
 async function initDb() {
     try {
         await pool.query(`
@@ -31,7 +33,7 @@ async function initDb() {
             );
         `);
 
-        // Auto-migration: If old categories table exists without user_id column, drop and rebuild tables
+        // Migration: ensure categories table has user_id
         await pool.query(`
             DO $$ 
             BEGIN 
@@ -76,11 +78,24 @@ async function initDb() {
                 amount NUMERIC NOT NULL,
                 type TEXT CHECK(type IN ('income', 'expense')) NOT NULL,
                 category_name TEXT NOT NULL,
-                date TEXT NOT NULL
+                date TEXT NOT NULL,
+                receipt_image TEXT
             );
         `);
 
-        console.log('⚡ PostgreSQL Multi-User Schema Migrated & Ready!');
+        // Migration: Add receipt_image column if missing
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns WHERE table_name='transactions' AND column_name='receipt_image'
+                ) THEN
+                    ALTER TABLE transactions ADD COLUMN receipt_image TEXT;
+                END IF;
+            END $$;
+        `);
+
+        console.log('⚡ PostgreSQL Multi-User Schema with Receipts Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -119,7 +134,6 @@ app.post('/api/auth/register', async (req, res) => {
         );
         const user = userRes.rows[0];
 
-        // Seed default starter categories for new user
         await pool.query(`
             INSERT INTO categories (user_id, name, target_limit) VALUES
             ($1, 'Housing & Utilities', 1500),
@@ -244,7 +258,7 @@ app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
 app.get('/api/transactions', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT id, description, amount::float, type, category_name, date FROM transactions WHERE user_id = $1 ORDER BY date DESC, id DESC',
+            'SELECT id, description, amount::float, type, category_name, date, receipt_image FROM transactions WHERE user_id = $1 ORDER BY date DESC, id DESC',
             [req.user.id]
         );
         res.json(result.rows);
@@ -255,10 +269,10 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 
 app.post('/api/transactions', authenticateToken, async (req, res) => {
     try {
-        const { description, amount, type, category_name, date } = req.body;
+        const { description, amount, type, category_name, date, receipt_image } = req.body;
         const result = await pool.query(
-            'INSERT INTO transactions (user_id, description, amount, type, category_name, date) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-            [req.user.id, description, amount, type, category_name, date]
+            'INSERT INTO transactions (user_id, description, amount, type, category_name, date, receipt_image) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+            [req.user.id, description, amount, type, category_name, date, receipt_image || null]
         );
         res.json(result.rows[0]);
     } catch (err) {
