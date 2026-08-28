@@ -138,7 +138,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
         `);
 
-        console.log('⚡ PostgreSQL Database with Multi-Currency & Indexes Ready!');
+        console.log('⚡ PostgreSQL Database & Cascading User Deletion Engine Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -227,6 +227,16 @@ app.put('/api/user/currency', authenticateToken, async (req, res) => {
 
         await pool.query('UPDATE users SET currency = $1 WHERE id = $2', [currency, req.user.id]);
         res.json({ success: true, currency });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Delete User Account Permanently & Cascade All Data
+app.delete('/api/user/account', authenticateToken, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM users WHERE id = $1', [req.user.id]);
+        res.json({ success: true, message: 'Account permanently deleted' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -479,4 +489,4 @@ app.delete('/api/accounts/:id', authenticateToken, async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.listen(PORT, () => console.log(`🚀 Optimized Multi-User Budget App running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Multi-User Budget App running on http://localhost:${PORT}`));

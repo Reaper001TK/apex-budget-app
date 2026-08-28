@@ -82,6 +82,7 @@
 
                     <button onclick="openHelpModal()" class="bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs px-2.5 py-1.5 rounded-lg font-semibold transition">📖 Guide</button>
                     <button onclick="logout()" class="bg-slate-700 hover:bg-slate-600 text-xs px-2.5 py-1.5 rounded-lg text-slate-200 transition">Logout</button>
+                    <button onclick="deleteAccountPermanently()" title="Permanently Delete Account" class="bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/30 text-xs px-2 py-1.5 rounded-lg transition font-semibold">Delete Account</button>
                 </div>
             </div>
         </header>
@@ -390,7 +391,20 @@
             loadAllData();
         }
 
-        // PHOTO COMPRESSION HELPER
+        async function deleteAccountPermanently() {
+            const confirmed = confirm("⚠️ ARE YOU SURE YOU WANT TO DELETE YOUR ACCOUNT?\n\nThis will PERMANENTLY erase your account, transaction logs, receipt photos, category budgets, savings goals, and bank accounts. This action CANNOT be undone!");
+            if (!confirmed) return;
+
+            try {
+                await authFetch('/api/user/account', { method: 'DELETE' });
+                alert("Your account and all associated data have been permanently deleted.");
+                logout();
+            } catch (err) {
+                alert("Failed to delete account. Please try again.");
+            }
+        }
+
+        // OPTIMIZED PHOTO COMPRESSION
         function handleReceiptSelect(e) {
             const file = e.target.files[0];
             if (!file) return;
