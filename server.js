@@ -10,7 +10,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'apex_budget_super_secret_jwt_key_2026';
 
-// Enable Gzip HTTP Response Compression for 70% payload size reduction
 app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -23,7 +22,7 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Initialize Relational Schema & Database Indexes
+// Initialize Relational Schema & Migration
 async function initDb() {
     try {
         await pool.query(`
@@ -31,11 +30,24 @@ async function initDb() {
                 id SERIAL PRIMARY KEY,
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
+                currency TEXT DEFAULT '$',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
-        // Migration check
+        // Migration: Add currency column to users if missing
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='currency'
+                ) THEN
+                    ALTER TABLE users ADD COLUMN currency TEXT DEFAULT '$';
+                END IF;
+            END $$;
+        `);
+
+        // Migration check for categories
         await pool.query(`
             DO $$ 
             BEGIN 
@@ -117,7 +129,7 @@ async function initDb() {
             );
         `);
 
-        // OPTIMIZATION: Database Query Performance Indexes
+        // Database Indexes for Speed
         await pool.query(`
             CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON transactions(user_id, date DESC);
             CREATE INDEX IF NOT EXISTS idx_categories_user ON categories(user_id);
@@ -126,7 +138,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
         `);
 
-        console.log('⚡ PostgreSQL Database & Performance Indexes Optimized!');
+        console.log('⚡ PostgreSQL Database with Multi-Currency & Indexes Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -160,8 +172,8 @@ app.post('/api/auth/register', async (req, res) => {
 
         const passwordHash = await bcrypt.hash(password, 10);
         const userRes = await pool.query(
-            'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email',
-            [emailLower, passwordHash]
+            'INSERT INTO users (email, password_hash, currency) VALUES ($1, $2, $3) RETURNING id, email, currency',
+            [emailLower, passwordHash, '$']
         );
         const user = userRes.rows[0];
 
@@ -201,7 +213,20 @@ app.post('/api/auth/login', async (req, res) => {
         if (!validPassword) return res.status(400).json({ error: 'Invalid email or password.' });
 
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-        res.json({ token, user: { id: user.id, email: user.email } });
+        res.json({ token, user: { id: user.id, email: user.email, currency: user.currency || '$' } });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Update User Currency Preference
+app.put('/api/user/currency', authenticateToken, async (req, res) => {
+    try {
+        const { currency } = req.body;
+        if (!currency) return res.status(400).json({ error: 'Currency symbol required' });
+
+        await pool.query('UPDATE users SET currency = $1 WHERE id = $2', [currency, req.user.id]);
+        res.json({ success: true, currency });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -212,6 +237,10 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/summary', authenticateToken, async (req, res) => {
     try {
         const month = req.query.month || new Date().toISOString().slice(0, 7);
+        
+        const userRes = await pool.query('SELECT currency FROM users WHERE id = $1', [req.user.id]);
+        const currency = userRes.rows[0]?.currency || '$';
+
         const query = `
             SELECT 
                 COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0) AS total_income,
@@ -225,7 +254,7 @@ app.get('/api/summary', authenticateToken, async (req, res) => {
         const savings = income - expenses;
         const savingsRate = income > 0 ? ((savings / income) * 100).toFixed(1) : 0;
 
-        res.json({ income, expenses, savings, savingsRate: parseFloat(savingsRate), month });
+        res.json({ income, expenses, savings, savingsRate: parseFloat(savingsRate), month, currency });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -258,7 +287,7 @@ app.get('/api/categories', authenticateToken, async (req, res) => {
 app.post('/api/categories', authenticateToken, async (req, res) => {
     try {
         const { name, limit } = req.body;
-        if (!name || isNaN(limit)) return res.status(400).json({ error: 'Valid category name and limit are required' });
+        if (!name || isNaN(limit)) return res.status(400).json({ error: 'Valid category name and limit required' });
 
         const result = await pool.query(
             `INSERT INTO categories (user_id, name, target_limit) 
@@ -410,7 +439,7 @@ app.delete('/api/recurring/:id', authenticateToken, async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- FINANCIAL ACCOUNTS / NET WORTH API ---
+// --- FINANCIAL ACCOUNTS API ---
 
 app.get('/api/accounts', authenticateToken, async (req, res) => {
     try {
