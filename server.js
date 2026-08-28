@@ -35,7 +35,7 @@ async function initDb() {
             );
         `);
 
-        // Migration: Add currency column to users if missing
+        // Migration: Add currency column to users if missing & repair NULLs
         await pool.query(`
             DO $$
             BEGIN
@@ -46,6 +46,8 @@ async function initDb() {
                 END IF;
             END $$;
         `);
+
+        await pool.query(`UPDATE users SET currency = '$' WHERE currency IS NULL;`);
 
         // Migration check for categories
         await pool.query(`
@@ -138,7 +140,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
         `);
 
-        console.log('⚡ PostgreSQL Database & Cascading User Deletion Engine Ready!');
+        console.log('⚡ PostgreSQL Database & Legacy Migration Engine Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -232,10 +234,17 @@ app.put('/api/user/currency', authenticateToken, async (req, res) => {
     }
 });
 
-// Delete User Account Permanently & Cascade All Data
+// Robust Explicit Multi-Table Delete User Account
 app.delete('/api/user/account', authenticateToken, async (req, res) => {
     try {
-        await pool.query('DELETE FROM users WHERE id = $1', [req.user.id]);
+        const uid = req.user.id;
+        await pool.query('DELETE FROM transactions WHERE user_id = $1', [uid]);
+        await pool.query('DELETE FROM categories WHERE user_id = $1', [uid]);
+        await pool.query('DELETE FROM savings_goals WHERE user_id = $1', [uid]);
+        await pool.query('DELETE FROM recurring_bills WHERE user_id = $1', [uid]);
+        await pool.query('DELETE FROM financial_accounts WHERE user_id = $1', [uid]);
+        await pool.query('DELETE FROM users WHERE id = $1', [uid]);
+
         res.json({ success: true, message: 'Account permanently deleted' });
     } catch (err) {
         res.status(500).json({ error: err.message });
