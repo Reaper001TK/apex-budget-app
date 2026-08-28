@@ -73,7 +73,7 @@
             
             <!-- DASHBOARD -->
             <div id="view-dashboard" class="space-y-6">
-                <!-- SMART AI INSIGHTS CARD -->
+                <!-- AI INSIGHTS CARD -->
                 <div class="bg-gradient-to-r from-blue-900/50 via-indigo-900/50 to-purple-900/50 border border-blue-500/30 p-5 rounded-2xl space-y-3">
                     <div class="flex items-center space-x-2">
                         <span class="text-xl">🤖</span>
@@ -122,7 +122,7 @@
                 </div>
             </div>
 
-            <!-- ACCOUNTS / NET WORTH TAB -->
+            <!-- ACCOUNTS TAB -->
             <div id="view-accounts" class="hidden space-y-6">
                 <div class="flex justify-between items-center bg-slate-800 border border-slate-700 p-4 rounded-xl">
                     <div>
@@ -210,7 +210,7 @@
                 </div>
             </div>
 
-            <!-- SAVINGS GOALS TAB -->
+            <!-- GOALS TAB -->
             <div id="view-goals" class="hidden space-y-6">
                 <div class="flex justify-between items-center bg-slate-800 border border-slate-700 p-4 rounded-xl">
                     <div>
@@ -357,7 +357,7 @@
             return document.getElementById('global-month-filter').value || new Date().toISOString().slice(0, 7);
         }
 
-        // PHOTO COMPRESSION HELPER
+        // OPTIMIZED PHOTO COMPRESSION (600px width @ 65% quality -> ~50KB per receipt)
         function handleReceiptSelect(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -367,13 +367,13 @@
                 const img = new Image();
                 img.onload = function() {
                     const canvas = document.createElement('canvas');
-                    const MAX_WIDTH = 800;
+                    const MAX_WIDTH = 600;
                     let width = img.width, height = img.height;
                     if (width > MAX_WIDTH) { height = Math.round((height * MAX_WIDTH) / width); width = MAX_WIDTH; }
                     canvas.width = width; canvas.height = height;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, width, height);
-                    currentReceiptBase64 = canvas.toDataURL('image/jpeg', 0.7);
+                    currentReceiptBase64 = canvas.toDataURL('image/jpeg', 0.65);
                     document.getElementById('receipt-preview').src = currentReceiptBase64;
                     document.getElementById('receipt-preview-container').classList.remove('hidden');
                 };
@@ -402,7 +402,7 @@
         function openHelpModal() { document.getElementById('help-modal').classList.remove('hidden'); }
         function closeHelpModal() { document.getElementById('help-modal').classList.add('hidden'); }
 
-        // AUTHENTICATION LOGIC
+        // AUTH LOGIC
         function toggleAuthMode() {
             isLoginMode = !isLoginMode;
             document.getElementById('auth-subtitle').innerText = isLoginMode ? 'Sign in to manage your personal finances' : 'Create a new personal budget account';
@@ -493,9 +493,7 @@
             const res = await authFetch('/api/accounts');
             loadedAccounts = await res.json();
 
-            let totalAssets = 0;
-            let totalDebts = 0;
-
+            let totalAssets = 0, totalDebts = 0;
             loadedAccounts.forEach(a => {
                 if (['checking', 'savings', 'investment'].includes(a.type)) totalAssets += a.balance;
                 else totalDebts += a.balance;
@@ -524,7 +522,7 @@
                             <input type="number" step="10" value="${a.balance}" 
                                    onblur="updateAccountBalance(${a.id}, this.value)"
                                    onkeydown="if(event.key === 'Enter') this.blur();" 
-                                   class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text.sm ${isAsset ? 'text-emerald-400' : 'text-rose-400'} font-bold focus:outline-none focus:border-blue-500">
+                                   class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm ${isAsset ? 'text-emerald-400' : 'text-rose-400'} font-bold focus:outline-none focus:border-blue-500">
                         </div>
                     </div>
                 `;
@@ -563,32 +561,30 @@
             const container = document.getElementById('ai-insights-container');
             let insights = [];
 
-            // Insight 1: Savings Rate Pace
             const savingsRate = loadedSummary.savingsRate || 0;
             if (savingsRate >= 20) {
                 insights.push(`
                     <div class="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl space-y-1">
                         <span class="font-bold text-emerald-400">🚀 Excellent Savings Pace</span>
-                        <p class="text-slate-300">You are saving <strong>${savingsRate}%</strong> of your income this month! Financial benchmarks recommend saving 20%+.</p>
+                        <p class="text-slate-300">You are saving <strong>${savingsRate}%</strong> of income! Target is 20%+.</p>
                     </div>
                 `);
             } else if (savingsRate > 0) {
                 insights.push(`
                     <div class="bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl space-y-1">
                         <span class="font-bold text-amber-400">💡 Savings Opportunity</span>
-                        <p class="text-slate-300">You are currently saving <strong>${savingsRate}%</strong> of income. Aim to reach 20% by cutting small discretionary categories.</p>
+                        <p class="text-slate-300">You are saving <strong>${savingsRate}%</strong> of income. Trim non-essential categories to reach 20%.</p>
                     </div>
                 `);
             } else {
                 insights.push(`
                     <div class="bg-rose-500/10 border border-rose-500/20 p-3 rounded-xl space-y-1">
                         <span class="font-bold text-rose-400">⚠️ Expenses Exceed Income</span>
-                        <p class="text-slate-300">Expenses currently exceed monthly income. Review category caps to bring spending back into net positive savings.</p>
+                        <p class="text-slate-300">Expenses currently exceed monthly income. Adjust category caps to balance cashflow.</p>
                     </div>
                 `);
             }
 
-            // Insight 2: Goals Velocity
             if (loadedGoals.length > 0) {
                 const goal = loadedGoals[0];
                 const remaining = goal.target_amount - goal.current_amount;
@@ -598,7 +594,7 @@
                     insights.push(`
                         <div class="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl space-y-1">
                             <span class="font-bold text-emerald-400">🎉 Goal Achieved!</span>
-                            <p class="text-slate-300">Congratulations! You hit 100% of your target for <strong>${goal.title}</strong>.</p>
+                            <p class="text-slate-300">You hit 100% of your target for <strong>${goal.title}</strong>.</p>
                         </div>
                     `);
                 } else if (monthlySavings > 0) {
@@ -606,14 +602,14 @@
                     insights.push(`
                         <div class="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl space-y-1">
                             <span class="font-bold text-blue-400">🎯 Goal Forecast</span>
-                            <p class="text-slate-300">At your current net savings rate ($${monthlySavings.toFixed(0)}/mo), you will reach <strong>${goal.title}</strong> in approx. <strong>${monthsLeft} months</strong>!</p>
+                            <p class="text-slate-300">At current savings rate ($${monthlySavings.toFixed(0)}/mo), you hit <strong>${goal.title}</strong> in <strong>${monthsLeft} months</strong>.</p>
                         </div>
                     `);
                 } else {
                     insights.push(`
                         <div class="bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-xl space-y-1">
                             <span class="font-bold text-indigo-400">🎯 Savings Target</span>
-                            <p class="text-slate-300">Deposit monthly net savings into <strong>${goal.title}</strong> ($${remaining.toFixed(0)} remaining to reach cap).</p>
+                            <p class="text-slate-300">Deposit savings into <strong>${goal.title}</strong> ($${remaining.toFixed(0)} remaining to reach target).</p>
                         </div>
                     `);
                 }
@@ -621,12 +617,11 @@
                 insights.push(`
                     <div class="bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-xl space-y-1">
                         <span class="font-bold text-indigo-400">🎯 Emergency Fund</span>
-                        <p class="text-slate-300">Head to the <strong>Goals</strong> tab to create an Emergency Savings target for automated milestone tracking.</p>
+                        <p class="text-slate-300">Create an Emergency Savings goal in the <strong>Goals</strong> tab to track milestone completion.</p>
                     </div>
                 `);
             }
 
-            // Insight 3: Debt vs Asset Buffer
             let assets = 0, debts = 0;
             loadedAccounts.forEach(a => {
                 if (['checking', 'savings', 'investment'].includes(a.type)) assets += a.balance;
@@ -637,21 +632,21 @@
                 insights.push(`
                     <div class="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl space-y-1">
                         <span class="font-bold text-emerald-400">🛡️ 0 Debt Shield</span>
-                        <p class="text-slate-300">You have $0 logged liabilities across credit cards and loans. Liquid assets total <strong>$${assets.toFixed(0)}</strong>.</p>
+                        <p class="text-slate-300">You have $0 liabilities logged. Liquid assets total <strong>$${assets.toFixed(0)}</strong>.</p>
                     </div>
                 `);
             } else if (assets > debts) {
                 insights.push(`
                     <div class="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl space-y-1">
                         <span class="font-bold text-blue-400">📈 Positive Net Buffer</span>
-                        <p class="text-slate-300">Total liquid assets ($${assets.toFixed(0)}) exceed debts ($${debts.toFixed(0)}) by a healthy margin of <strong>$${(assets - debts).toFixed(0)}</strong>.</p>
+                        <p class="text-slate-300">Assets ($${assets.toFixed(0)}) exceed debts ($${debts.toFixed(0)}) by <strong>$${(assets - debts).toFixed(0)}</strong>.</p>
                     </div>
                 `);
             } else {
                 insights.push(`
                     <div class="bg-rose-500/10 border border-rose-500/20 p-3 rounded-xl space-y-1">
                         <span class="font-bold text-rose-400">💳 Debt Reduction Target</span>
-                        <p class="text-slate-300">Debts ($${debts.toFixed(0)}) currently exceed assets ($${assets.toFixed(0)}). Prioritize high-interest credit card balance payoffs.</p>
+                        <p class="text-slate-300">Debts ($${debts.toFixed(0)}) exceed assets ($${assets.toFixed(0)}). Prioritize high-interest balances.</p>
                     </div>
                 `);
             }
