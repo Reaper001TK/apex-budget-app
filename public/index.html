@@ -6,6 +6,9 @@
     <title>ApexBudget - Multi-User SaaS</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- PLAID LINK SECURE SDK -->
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
 
@@ -23,7 +26,6 @@
                 <p id="auth-subtitle" class="text-xs text-slate-400">Sign in to manage your personal finances</p>
             </div>
 
-            <!-- LOGIN / REGISTER FORM -->
             <form id="auth-form" onsubmit="handleAuthSubmit(event)" class="space-y-4">
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">Email Address</label>
@@ -159,12 +161,16 @@
 
             <!-- ACCOUNTS TAB -->
             <div id="view-accounts" class="hidden space-y-6">
-                <div class="flex justify-between items-center bg-slate-800 border border-slate-700 p-4 rounded-xl">
+                <div class="flex flex-wrap justify-between items-center bg-slate-800 border border-slate-700 p-4 rounded-xl gap-3">
                     <div>
                         <h2 class="text-lg font-bold">🏦 Accounts & Net Worth Tracker</h2>
-                        <p class="text-xs text-slate-400">Track checking, savings, credit card, and loan balances.</p>
+                        <p class="text-xs text-slate-400">Track checking, savings, credit card, and real bank connections.</p>
                     </div>
-                    <button onclick="document.getElementById('account-modal').classList.remove('hidden')" class="bg-blue-600 hover:bg-blue-700 text-sm font-semibold px-4 py-2 rounded-lg">+ Add Account</button>
+                    <div class="flex space-x-2">
+                        <button onclick="syncLivePlaidData()" class="bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold px-3 py-2 rounded-lg transition flex items-center gap-1">🔄 Sync Live Bank Data</button>
+                        <button onclick="launchPlaidLink()" class="bg-blue-600 hover:bg-blue-700 text-xs font-semibold px-3 py-2 rounded-lg transition flex items-center gap-1">🔗 Link Real Bank (Plaid)</button>
+                        <button onclick="document.getElementById('account-modal').classList.remove('hidden')" class="bg-slate-700 hover:bg-slate-600 text-xs font-semibold px-3 py-2 rounded-lg transition">+ Manual Account</button>
+                    </div>
                 </div>
                 <div id="accounts-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
             </div>
@@ -383,8 +389,8 @@
             </div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
-                    <span class="text-blue-400 font-bold">1. Accounts & Transfers</span>
-                    <p class="text-slate-300">Track checking/savings balances and move funds directly between accounts with the Transfer feature.</p>
+                    <span class="text-blue-400 font-bold">1. Accounts & Real Bank Sync</span>
+                    <p class="text-slate-300">Track bank checking/savings or click "Link Real Bank" to sync live balances & transactions via Plaid.</p>
                 </div>
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
                     <span class="text-emerald-400 font-bold">2. Auto-Deduct Expenses</span>
@@ -447,6 +453,60 @@
             setTimeout(() => {
                 toast.classList.add('translate-y-20', 'opacity-0');
             }, 3500);
+        }
+
+        // PLAID LINK SECURE REAL BANK CONNECTION
+        async function launchPlaidLink() {
+            try {
+                const res = await authFetch('/api/plaid/create-link-token', { method: 'POST' });
+                const data = await res.json();
+                
+                if (!res.ok) {
+                    alert(data.error || "Plaid API Keys not configured on Render yet.");
+                    return;
+                }
+
+                const handler = Plaid.create({
+                    token: data.link_token,
+                    onSuccess: async (public_token, metadata) => {
+                        showToast('⌛ Connecting real bank accounts...');
+                        const exRes = await authFetch('/api/plaid/exchange-public-token', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                public_token: public_token,
+                                institution_name: metadata.institution.name
+                            })
+                        });
+                        if (exRes.ok) {
+                            showToast('🎉 Real bank account linked & balances encrypted!');
+                            loadAllData();
+                        }
+                    },
+                    onExit: (err, metadata) => {
+                        if (err) console.error('Plaid Link Exit:', err);
+                    }
+                });
+                handler.open();
+            } catch (e) {
+                console.error(e);
+                alert("Failed to initialize Plaid Link.");
+            }
+        }
+
+        async function syncLivePlaidData() {
+            try {
+                showToast('⌛ Syncing live bank transactions & balances...');
+                const res = await authFetch('/api/plaid/sync-transactions', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(data.error || "Live sync failed.");
+                    return;
+                }
+                showToast(`🎉 Synced ${data.syncedCount} new live bank transactions!`);
+                loadAllData();
+            } catch (e) {
+                console.error(e);
+            }
         }
 
         function setTxDatePreset(type) {
@@ -732,7 +792,10 @@
                         <div class="flex justify-between items-start">
                             <div>
                                 <h3 class="font-bold text-white text-base">${a.name}</h3>
-                                <span class="text-xs px-2 py-0.5 rounded capitalize ${isAsset ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}">${a.type.replace('_', ' ')}</span>
+                                <div class="flex items-center space-x-1 mt-1">
+                                    <span class="text-xs px-2 py-0.5 rounded capitalize ${isAsset ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}">${a.type.replace('_', ' ')}</span>
+                                    ${a.plaid_account_id ? '<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] px-1.5 py-0.5 rounded">🔗 Bank Synced</span>' : ''}
+                                </div>
                             </div>
                             <button onclick="deleteAccount(${a.id})" class="text-xs text-slate-500 hover:text-rose-400">✕</button>
                         </div>

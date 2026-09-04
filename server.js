@@ -5,10 +5,13 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const compression = require('compression');
+const crypto = require('crypto');
+const { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } = require('plaid');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'apex_budget_super_secret_jwt_key_2026';
+const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'apex_budget_super_secret_32byte_key_1234';
 
 app.use(compression());
 app.use(cors());
@@ -21,6 +24,43 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
+
+// Configure Plaid Client
+const plaidEnv = process.env.PLAID_ENV || 'sandbox';
+const plaidConfig = new Configuration({
+    basePath: PlaidEnvironments[plaidEnv],
+    baseOptions: {
+        headers: {
+            'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID || 'mock_client_id',
+            'PLAID-SECRET': process.env.PLAID_SECRET || 'mock_secret'
+        }
+    }
+});
+const plaidClient = new PlaidApi(plaidConfig);
+
+// --- AES-256-GCM BANK ENCRYPTION HELPERS ---
+function encryptToken(text) {
+    const iv = crypto.randomBytes(12);
+    const key = crypto.scryptSync(ENCRYPTION_SECRET, 'salt', 32);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag().toString('hex');
+    return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+}
+
+function decryptToken(encryptedData) {
+    if (!encryptedData) return null;
+    const [ivHex, authTagHex, encryptedText] = encryptedData.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const key = crypto.scryptSync(ENCRYPTION_SECRET, 'salt', 32);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+}
 
 // --- LIVE CURRENCY EXCHANGE RATE ENGINE ---
 let cachedRates = { USD: 1, EUR: 0.92, GBP: 0.79, JPY: 155.0, INR: 83.5, CAD: 1.36, AUD: 1.51, BRL: 5.4, MXN: 18.2, CHF: 0.89, KRW: 1375.0 };
@@ -61,20 +101,6 @@ async function initDb() {
         `);
 
         await pool.query(`
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='currency'
-                ) THEN
-                    ALTER TABLE users ADD COLUMN currency TEXT DEFAULT '$';
-                END IF;
-            END $$;
-        `);
-
-        await pool.query(`UPDATE users SET currency = '$' WHERE currency IS NULL;`);
-        await pool.query(`UPDATE users SET is_verified = TRUE WHERE is_verified IS NULL;`);
-
-        await pool.query(`
             CREATE TABLE IF NOT EXISTS categories (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -89,7 +115,20 @@ async function initDb() {
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 type TEXT CHECK(type IN ('checking', 'savings', 'investment', 'credit_card', 'loan')) NOT NULL,
-                balance NUMERIC DEFAULT 0
+                balance NUMERIC DEFAULT 0,
+                plaid_account_id TEXT,
+                plaid_item_id INTEGER
+            );
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS plaid_items (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                item_id TEXT UNIQUE NOT NULL,
+                access_token_encrypted TEXT NOT NULL,
+                institution_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
@@ -103,17 +142,9 @@ async function initDb() {
                 type TEXT NOT NULL,
                 category_name TEXT NOT NULL,
                 date TEXT NOT NULL,
-                receipt_image TEXT
+                receipt_image TEXT,
+                plaid_transaction_id TEXT UNIQUE
             );
-        `);
-
-        await pool.query(`
-            DO $$
-            BEGIN
-                ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
-                ALTER TABLE transactions ADD CONSTRAINT transactions_type_check CHECK (type IN ('income', 'expense', 'transfer'));
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
         `);
 
         await pool.query(`
@@ -139,15 +170,7 @@ async function initDb() {
             );
         `);
 
-        await pool.query(`
-            CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON transactions(user_id, date DESC);
-            CREATE INDEX IF NOT EXISTS idx_categories_user ON categories(user_id);
-            CREATE INDEX IF NOT EXISTS idx_goals_user ON savings_goals(user_id);
-            CREATE INDEX IF NOT EXISTS idx_recurring_user ON recurring_bills(user_id);
-            CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
-        `);
-
-        console.log('⚡ PostgreSQL Database & Instant Registration System Ready!');
+        console.log('⚡ PostgreSQL Database & Bank Encryption Engine Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -173,17 +196,157 @@ app.get('/api/rates', async (req, res) => {
     res.json({ base: 'USD', rates, last_updated: lastRatesFetch });
 });
 
-// --- AUTHENTICATION ROUTES ---
+// --- PLAID BANK SYNC ENDPOINTS ---
 
-// 1. Instant Account Registration
+// 1. Create Plaid Link Token
+app.post('/api/plaid/create-link-token', authenticateToken, async (req, res) => {
+    try {
+        if (!process.env.PLAID_CLIENT_ID || process.env.PLAID_CLIENT_ID === 'mock_client_id') {
+            return res.status(400).json({ 
+                error: 'Plaid API Keys not configured yet. Add PLAID_CLIENT_ID and PLAID_SECRET to Render Environment Variables.' 
+            });
+        }
+
+        const configs = {
+            user: { client_user_id: req.user.id.toString() },
+            client_name: 'ApexBudget SaaS',
+            products: [Products.Transactions, Products.Auth],
+            country_codes: [CountryCode.Us, CountryCode.Ca],
+            language: 'en',
+        };
+
+        const createTokenResponse = await plaidClient.linkTokenCreate(configs);
+        res.json({ link_token: createTokenResponse.data.link_token });
+    } catch (err) {
+        console.error('Plaid Link Token Error:', err.response?.data || err.message);
+        res.status(500).json({ error: err.response?.data?.error_message || err.message });
+    }
+});
+
+// 2. Exchange Public Token & Encrypt Bank Access Token
+app.post('/api/plaid/exchange-public-token', authenticateToken, async (req, res) => {
+    try {
+        const { public_token, institution_name } = req.body;
+        
+        const tokenResponse = await plaidClient.itemPublicTokenExchange({ public_token });
+        const accessToken = tokenResponse.data.access_token;
+        const itemId = tokenResponse.data.item_id;
+
+        // Encrypt Access Token using AES-256-GCM
+        const encryptedAccessToken = encryptToken(accessToken);
+
+        // Save Plaid Item to PostgreSQL
+        const plaidItemRes = await pool.query(
+            'INSERT INTO plaid_items (user_id, item_id, access_token_encrypted, institution_name) VALUES ($1, $2, $3, $4) RETURNING id',
+            [req.user.id, itemId, encryptedAccessToken, institution_name || 'Bank Account']
+        );
+        const plaidDbItemId = plaidItemRes.rows[0].id;
+
+        // Fetch Live Accounts & Sync Balances
+        const accountsResponse = await plaidClient.accountsGet({ access_token: accessToken });
+        const accounts = accountsResponse.data.accounts;
+
+        for (const acc of accounts) {
+            let accType = 'checking';
+            if (acc.type === 'depository') {
+                accType = acc.subtype === 'savings' ? 'savings' : 'checking';
+            } else if (acc.type === 'credit') {
+                accType = 'credit_card';
+            } else if (acc.type === 'loan') {
+                accType = 'loan';
+            } else if (acc.type === 'investment') {
+                accType = 'investment';
+            }
+
+            const currentBalance = acc.balances.current || acc.balances.available || 0;
+
+            await pool.query(
+                `INSERT INTO financial_accounts (user_id, name, type, balance, plaid_account_id, plaid_item_id)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT DO NOTHING`,
+                [req.user.id, `${institution_name || 'Bank'} ${acc.name}`, accType, currentBalance, acc.id, plaidDbItemId]
+            );
+        }
+
+        res.json({ success: true, message: `Connected ${accounts.length} bank accounts securely!` });
+    } catch (err) {
+        console.error('Plaid Token Exchange Error:', err.response?.data || err.message);
+        res.status(500).json({ error: err.response?.data?.error_message || err.message });
+    }
+});
+
+// 3. Sync Real Live Transactions from Linked Banks
+app.post('/api/plaid/sync-transactions', authenticateToken, async (req, res) => {
+    try {
+        const plaidItemsRes = await pool.query('SELECT * FROM plaid_items WHERE user_id = $1', [req.user.id]);
+        if (plaidItemsRes.rows.length === 0) {
+            return res.status(400).json({ error: 'No linked bank accounts found. Click "Link Real Bank Account" first.' });
+        }
+
+        let totalSynced = 0;
+
+        for (const item of plaidItemsRes.rows) {
+            const accessToken = decryptToken(item.access_token_encrypted);
+            if (!accessToken) continue;
+
+            // Fetch live balances
+            const accountsResponse = await plaidClient.accountsGet({ access_token: accessToken });
+            for (const acc of accountsResponse.data.accounts) {
+                const bal = acc.balances.current || acc.balances.available || 0;
+                await pool.query(
+                    'UPDATE financial_accounts SET balance = $1 WHERE plaid_account_id = $2 AND user_id = $3',
+                    [bal, acc.id, req.user.id]
+                );
+            }
+
+            // Fetch live transactions for the last 30 days
+            const startDate = new Date();
+            startDate.setDate(startDate.getDate() - 30);
+            const startDateStr = startDate.toISOString().slice(0, 10);
+            const endDateStr = new Date().toISOString().slice(0, 10);
+
+            const txResponse = await plaidClient.transactionsGet({
+                access_token: accessToken,
+                start_date: startDateStr,
+                end_date: endDateStr
+            });
+
+            for (const pTx of txResponse.data.transactions) {
+                const amount = Math.abs(pTx.amount);
+                const type = pTx.amount > 0 ? 'expense' : 'income'; // Plaid amounts > 0 are expenses
+                const category = pTx.category ? pTx.category[0] : 'Groceries';
+                const desc = pTx.name || pTx.merchant_name || 'Bank Transaction';
+
+                // Find linked financial_account id
+                const dbAccRes = await pool.query('SELECT id FROM financial_accounts WHERE plaid_account_id = $1 AND user_id = $2', [pTx.account_id, req.user.id]);
+                const accountId = dbAccRes.rows.length > 0 ? dbAccRes.rows[0].id : null;
+
+                const result = await pool.query(
+                    `INSERT INTO transactions (user_id, account_id, description, amount, type, category_name, date, plaid_transaction_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                     ON CONFLICT (plaid_transaction_id) DO NOTHING`,
+                    [req.user.id, accountId, desc, amount, type, category, pTx.date, pTx.transaction_id]
+                );
+
+                if (result.rowCount > 0) totalSynced++;
+            }
+        }
+
+        res.json({ success: true, syncedCount: totalSynced, message: `Successfully synced live bank accounts!` });
+    } catch (err) {
+        console.error('Plaid Sync Error:', err.response?.data || err.message);
+        res.status(500).json({ error: err.response?.data?.error_message || err.message });
+    }
+});
+
+// --- AUTH ROUTES ---
+
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
         const emailLower = email.toLowerCase().trim();
-
-        // Strict Email Format Validation
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(emailLower)) {
             return res.status(400).json({ error: 'Please enter a valid email address (e.g. name@example.com).' });
@@ -201,7 +364,6 @@ app.post('/api/auth/register', async (req, res) => {
         );
         const user = userRes.rows[0];
 
-        // Seed default categories
         await pool.query(`
             INSERT INTO categories (user_id, name, target_limit) VALUES
             ($1, 'Housing & Utilities', 1500),
@@ -211,7 +373,6 @@ app.post('/api/auth/register', async (req, res) => {
             ($1, 'Transportation', 250);
         `, [user.id]);
 
-        // Seed default accounts
         await pool.query(`
             INSERT INTO financial_accounts (user_id, name, type, balance) VALUES
             ($1, 'Primary Checking', 'checking', 2500),
@@ -222,12 +383,10 @@ app.post('/api/auth/register', async (req, res) => {
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
         res.json({ token, user });
     } catch (err) {
-        console.error('Registration Error:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// 2. Login
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -267,49 +426,10 @@ app.delete('/api/user/account', authenticateToken, async (req, res) => {
         await pool.query('DELETE FROM savings_goals WHERE user_id = $1', [uid]);
         await pool.query('DELETE FROM recurring_bills WHERE user_id = $1', [uid]);
         await pool.query('DELETE FROM financial_accounts WHERE user_id = $1', [uid]);
+        await pool.query('DELETE FROM plaid_items WHERE user_id = $1', [uid]);
         await pool.query('DELETE FROM users WHERE id = $1', [uid]);
 
         res.json({ success: true, message: 'Account permanently deleted' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// --- ACCOUNT TRANSFER API ---
-
-app.post('/api/transfers', authenticateToken, async (req, res) => {
-    try {
-        const { from_account_id, to_account_id, amount, date, description } = req.body;
-        const amountNum = parseFloat(amount);
-
-        if (!from_account_id || !to_account_id || isNaN(amountNum) || amountNum <= 0) {
-            return res.status(400).json({ error: 'Source account, destination account, and positive amount required.' });
-        }
-
-        if (parseInt(from_account_id) === parseInt(to_account_id)) {
-            return res.status(400).json({ error: 'Source and destination accounts must be different.' });
-        }
-
-        const fromAccRes = await pool.query('SELECT name FROM financial_accounts WHERE id = $1 AND user_id = $2', [from_account_id, req.user.id]);
-        const toAccRes = await pool.query('SELECT name FROM financial_accounts WHERE id = $1 AND user_id = $2', [to_account_id, req.user.id]);
-
-        if (fromAccRes.rows.length === 0 || toAccRes.rows.length === 0) {
-            return res.status(404).json({ error: 'One or both financial accounts not found.' });
-        }
-
-        const fromAcc = fromAccRes.rows[0];
-        const toAcc = toAccRes.rows[0];
-
-        await pool.query('UPDATE financial_accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [amountNum, from_account_id, req.user.id]);
-        await pool.query('UPDATE financial_accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [amountNum, to_account_id, req.user.id]);
-
-        const desc = description ? `${description} (${fromAcc.name} ➔ ${toAcc.name})` : `Transfer: ${fromAcc.name} ➔ ${toAcc.name}`;
-        const txRes = await pool.query(
-            'INSERT INTO transactions (user_id, account_id, description, amount, type, category_name, date) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-            [req.user.id, from_account_id, desc, amountNum, 'transfer', 'Transfer', date || new Date().toISOString().slice(0, 10)]
-        );
-
-        res.json({ success: true, transaction: txRes.rows[0], fromAccount: fromAcc.name, toAccount: toAcc.name });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -600,7 +720,7 @@ app.delete('/api/recurring/:id', authenticateToken, async (req, res) => {
 
 app.get('/api/accounts', authenticateToken, async (req, res) => {
     try {
-        const result = await pool.query('SELECT id, name, type, balance::float FROM financial_accounts WHERE user_id = $1 ORDER BY id ASC', [req.user.id]);
+        const result = await pool.query('SELECT id, name, type, balance::float, plaid_account_id FROM financial_accounts WHERE user_id = $1 ORDER BY id ASC', [req.user.id]);
         res.json(result.rows);
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
