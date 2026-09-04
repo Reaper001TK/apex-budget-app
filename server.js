@@ -22,6 +22,31 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
+// --- LIVE CURRENCY EXCHANGE RATE ENGINE ---
+let cachedRates = { USD: 1, EUR: 0.92, GBP: 0.79, JPY: 155.0, INR: 83.5, CAD: 1.36, AUD: 1.51, BRL: 5.4, MXN: 18.2, CHF: 0.89, KRW: 1375.0 };
+let lastRatesFetch = 0;
+
+async function getExchangeRates() {
+    const now = Date.now();
+    // Refresh live rates every 1 hour (3600000 ms)
+    if (now - lastRatesFetch > 3600000) {
+        try {
+            const response = await fetch('https://open.er-api.com/v6/latest/USD');
+            if (response.ok) {
+                const data = await response.json();
+                if (data && data.rates) {
+                    cachedRates = data.rates;
+                    lastRatesFetch = now;
+                    console.log('🌐 Live Currency Exchange Rates updated successfully!');
+                }
+            }
+        } catch (err) {
+            console.error('Exchange Rate API Error (using cached fallback):', err.message);
+        }
+    }
+    return cachedRates;
+}
+
 // Initialize Relational Schema & Migration
 async function initDb() {
     try {
@@ -35,7 +60,6 @@ async function initDb() {
             );
         `);
 
-        // Migration: Add currency column to users if missing & repair NULLs
         await pool.query(`
             DO $$
             BEGIN
@@ -49,7 +73,6 @@ async function initDb() {
 
         await pool.query(`UPDATE users SET currency = '$' WHERE currency IS NULL;`);
 
-        // Migration check for categories
         await pool.query(`
             DO $$ 
             BEGIN 
@@ -131,7 +154,6 @@ async function initDb() {
             );
         `);
 
-        // Database Indexes for Speed
         await pool.query(`
             CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON transactions(user_id, date DESC);
             CREATE INDEX IF NOT EXISTS idx_categories_user ON categories(user_id);
@@ -140,7 +162,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
         `);
 
-        console.log('⚡ PostgreSQL Database & Legacy Migration Engine Ready!');
+        console.log('⚡ PostgreSQL Database & Live Currency Conversion Engine Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -148,7 +170,6 @@ async function initDb() {
 
 initDb();
 
-// Middleware: Authenticate JWT Token
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -160,6 +181,12 @@ function authenticateToken(req, res, next) {
         next();
     });
 }
+
+// Live Exchange Rates Endpoint
+app.get('/api/rates', async (req, res) => {
+    const rates = await getExchangeRates();
+    res.json({ base: 'USD', rates, last_updated: lastRatesFetch });
+});
 
 // --- AUTH ROUTES ---
 
@@ -221,7 +248,6 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Update User Currency Preference
 app.put('/api/user/currency', authenticateToken, async (req, res) => {
     try {
         const { currency } = req.body;
@@ -234,7 +260,6 @@ app.put('/api/user/currency', authenticateToken, async (req, res) => {
     }
 });
 
-// Robust Explicit Multi-Table Delete User Account
 app.delete('/api/user/account', authenticateToken, async (req, res) => {
     try {
         const uid = req.user.id;

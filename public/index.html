@@ -74,6 +74,9 @@
                         <option value="₩">₩ (KRW)</option>
                     </select>
 
+                    <!-- LIVE CONVERSION BADGE -->
+                    <span id="live-rate-badge" class="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-[10px] px-2 py-1 rounded font-mono hidden md:inline">🌐 1 USD = 1.00 USD</span>
+
                     <!-- MONTH FILTER -->
                     <div class="flex items-center space-x-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
                         <span class="text-xs text-slate-400">📅</span>
@@ -364,6 +367,12 @@
         let currentReceiptBase64 = null;
         let loadedTransactions = [], loadedGoals = [], loadedAccounts = [], loadedSummary = {};
         let currentCurrency = '$';
+        let liveExchangeRates = { USD: 1 };
+
+        const CURRENCY_CODE_MAP = {
+            '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR',
+            'CA$': 'CAD', 'A$': 'AUD', 'R$': 'BRL', 'MX$': 'MXN', 'CHF': 'CHF', '₩': 'KRW'
+        };
 
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('global-month-filter').value = new Date().toISOString().slice(0, 7);
@@ -372,21 +381,59 @@
             else showAuth();
         });
 
-        function fmt(amount) {
-            return `${currentCurrency}${parseFloat(amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        function getConversionRate() {
+            const code = CURRENCY_CODE_MAP[currentCurrency] || 'USD';
+            return liveExchangeRates[code] || 1.0;
         }
 
-        function fmtSigned(amount, type) {
+        function convert(amountUsd) {
+            return (parseFloat(amountUsd || 0) * getConversionRate());
+        }
+
+        function unconvert(convertedAmount) {
+            return (parseFloat(convertedAmount || 0) / getConversionRate());
+        }
+
+        function fmt(amountUsd) {
+            const converted = convert(amountUsd);
+            return `${currentCurrency}${converted.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        }
+
+        function fmtSigned(amountUsd, type) {
             const prefix = type === 'income' ? '+' : '-';
-            return `${prefix}${currentCurrency}${Math.abs(parseFloat(amount || 0)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            const converted = convert(amountUsd);
+            return `${prefix}${currentCurrency}${Math.abs(converted).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
         }
 
         function getSelectedMonth() {
             return document.getElementById('global-month-filter').value || new Date().toISOString().slice(0, 7);
         }
 
+        async function fetchExchangeRates() {
+            try {
+                const res = await fetch('/api/rates');
+                const data = await res.json();
+                if (data && data.rates) {
+                    liveExchangeRates = data.rates;
+                    updateLiveRateBadge();
+                }
+            } catch (e) { console.error('Error fetching live rates:', e); }
+        }
+
+        function updateLiveRateBadge() {
+            const code = CURRENCY_CODE_MAP[currentCurrency] || 'USD';
+            const rate = liveExchangeRates[code] || 1.0;
+            const badge = document.getElementById('live-rate-badge');
+            if (code === 'USD') {
+                badge.innerText = `🌐 1 USD Base`;
+            } else {
+                badge.innerText = `🌐 1 USD = ${rate.toFixed(2)} ${code} (Live)`;
+            }
+        }
+
         async function changeCurrency(newCurr) {
             currentCurrency = newCurr;
+            updateLiveRateBadge();
             await authFetch('/api/user/currency', { method: 'PUT', body: JSON.stringify({ currency: newCurr }) });
             loadAllData();
         }
@@ -498,10 +545,11 @@
             document.getElementById('view-main').classList.add('hidden');
         }
 
-        function showApp() {
+        async function showApp() {
             document.getElementById('view-auth').classList.add('hidden');
             document.getElementById('view-main').classList.remove('hidden');
             document.getElementById('tx-date').valueAsDate = new Date();
+            await fetchExchangeRates();
             loadAllData();
         }
 
@@ -533,6 +581,7 @@
 
             currentCurrency = loadedSummary.currency || '$';
             document.getElementById('global-currency-filter').value = currentCurrency;
+            updateLiveRateBadge();
 
             document.getElementById('stat-income').innerText = fmt(loadedSummary.income);
             document.getElementById('stat-expenses').innerText = fmt(loadedSummary.expenses);
@@ -559,6 +608,7 @@
             const container = document.getElementById('accounts-container');
             container.innerHTML = loadedAccounts.map(a => {
                 const isAsset = ['checking', 'savings', 'investment'].includes(a.type);
+                const displayBal = convert(a.balance);
                 return `
                     <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl space-y-3">
                         <div class="flex justify-between items-start">
@@ -570,7 +620,7 @@
                         </div>
                         <div class="flex items-center space-x-1 pt-2">
                             <span class="text-xs text-slate-400">Balance: ${currentCurrency}</span>
-                            <input type="number" step="10" value="${a.balance}" 
+                            <input type="number" step="0.01" value="${displayBal.toFixed(2)}" 
                                    onblur="updateAccountBalance(${a.id}, this.value)"
                                    onkeydown="if(event.key === 'Enter') this.blur();" 
                                    class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm ${isAsset ? 'text-emerald-400' : 'text-rose-400'} font-bold focus:outline-none focus:border-blue-500">
@@ -583,19 +633,21 @@
         async function saveAccount() {
             const name = document.getElementById('acc-name').value;
             const type = document.getElementById('acc-type').value;
-            const balance = parseFloat(document.getElementById('acc-balance').value) || 0;
+            const rawVal = parseFloat(document.getElementById('acc-balance').value) || 0;
+            const balanceUsd = unconvert(rawVal);
 
             if (!name) return alert("Account name required.");
 
-            await authFetch('/api/accounts', { method: 'POST', body: JSON.stringify({ name, type, balance }) });
+            await authFetch('/api/accounts', { method: 'POST', body: JSON.stringify({ name, type, balance: balanceUsd }) });
             document.getElementById('account-modal').classList.add('hidden');
             loadAllData();
         }
 
-        async function updateAccountBalance(id, newBal) {
-            const balance = parseFloat(newBal);
-            if (!isNaN(balance)) {
-                await authFetch(`/api/accounts/${id}`, { method: 'PUT', body: JSON.stringify({ balance }) });
+        async function updateAccountBalance(id, displayBal) {
+            const val = parseFloat(displayBal);
+            if (!isNaN(val)) {
+                const balanceUsd = unconvert(val);
+                await authFetch(`/api/accounts/${id}`, { method: 'PUT', body: JSON.stringify({ balance: balanceUsd }) });
                 loadAllData();
             }
         }
@@ -720,13 +772,14 @@
             container.innerHTML = categories.map(cat => {
                 const percent = Math.min(Math.round((cat.total_spent / cat.target_limit) * 100), 100);
                 const isOver = cat.total_spent > cat.target_limit;
+                const displayLimit = convert(cat.target_limit);
                 return `
                     <div class="bg-slate-800 border border-slate-700 p-4 rounded-xl space-y-3">
                         <div class="flex justify-between items-center">
                             <span class="font-semibold text-white">${cat.name}</span>
                             <div class="flex items-center space-x-1">
                                 <span class="text-xs text-slate-400">Budget: ${currentCurrency}</span>
-                                <input type="number" step="10" value="${cat.target_limit}" 
+                                <input type="number" step="10" value="${displayLimit.toFixed(2)}" 
                                        onblur="updateCategoryBudget(${cat.id}, this.value)"
                                        onkeydown="if(event.key === 'Enter') this.blur();" 
                                        class="w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-right text-emerald-400 font-bold focus:outline-none focus:border-blue-500">
@@ -749,10 +802,11 @@
             renderCharts(categories);
         }
 
-        async function updateCategoryBudget(id, newLimit) {
-            const limit = parseFloat(newLimit);
-            if (!isNaN(limit) && limit >= 0) {
-                await authFetch(`/api/categories/${id}`, { method: 'PUT', body: JSON.stringify({ limit }) });
+        async function updateCategoryBudget(id, displayLimit) {
+            const val = parseFloat(displayLimit);
+            if (!isNaN(val) && val >= 0) {
+                const limitUsd = unconvert(val);
+                await authFetch(`/api/categories/${id}`, { method: 'PUT', body: JSON.stringify({ limit: limitUsd }) });
                 loadAllData();
             }
         }
@@ -795,9 +849,12 @@
 
         async function handleAddTransaction(e) {
             e.preventDefault();
+            const rawAmount = parseFloat(document.getElementById('tx-amount').value);
+            const amountUsd = unconvert(rawAmount);
+
             const payload = {
                 description: document.getElementById('tx-desc').value,
-                amount: parseFloat(document.getElementById('tx-amount').value),
+                amount: amountUsd,
                 type: document.getElementById('tx-type').value,
                 category_name: document.getElementById('tx-category').value,
                 date: document.getElementById('tx-date').value,
@@ -815,11 +872,13 @@
             const nameInput = document.getElementById('cat-name');
             const limitInput = document.getElementById('cat-limit');
             const name = nameInput.value.trim();
-            const limit = parseFloat(limitInput.value);
+            const rawLimit = parseFloat(limitInput.value);
 
-            if (!name || isNaN(limit)) return alert("Valid name and limit required.");
+            if (!name || isNaN(rawLimit)) return alert("Valid name and limit required.");
 
-            const res = await authFetch('/api/categories', { method: 'POST', body: JSON.stringify({ name, limit }) });
+            const limitUsd = unconvert(rawLimit);
+
+            const res = await authFetch('/api/categories', { method: 'POST', body: JSON.stringify({ name, limit: limitUsd }) });
             if (res.ok) {
                 nameInput.value = ''; limitInput.value = '';
                 document.getElementById('cat-modal').classList.add('hidden');
@@ -871,20 +930,29 @@
 
         async function saveGoal() {
             const title = document.getElementById('goal-title').value;
-            const target_amount = parseFloat(document.getElementById('goal-target').value);
-            const current_amount = parseFloat(document.getElementById('goal-current').value) || 0;
+            const rawTarget = parseFloat(document.getElementById('goal-target').value);
+            const rawCurrent = parseFloat(document.getElementById('goal-current').value) || 0;
             const target_date = document.getElementById('goal-date').value;
 
-            if (!title || isNaN(target_amount)) return alert("Goal name and target amount required.");
+            if (!title || isNaN(rawTarget)) return alert("Goal name and target amount required.");
 
-            await authFetch('/api/goals', { method: 'POST', body: JSON.stringify({ title, target_amount, current_amount, target_date }) });
+            await authFetch('/api/goals', { 
+                method: 'POST', 
+                body: JSON.stringify({ 
+                    title, 
+                    target_amount: unconvert(rawTarget), 
+                    current_amount: unconvert(rawCurrent), 
+                    target_date 
+                }) 
+            });
             document.getElementById('goal-modal').classList.add('hidden');
             loadAllData();
         }
 
-        async function adjustGoal(id, current, change) {
-            const newAmount = Math.max(0, current + change);
-            await authFetch(`/api/goals/${id}`, { method: 'PUT', body: JSON.stringify({ current_amount: newAmount }) });
+        async function adjustGoal(id, currentUsd, changeDisplay) {
+            const changeUsd = unconvert(changeDisplay);
+            const newAmountUsd = Math.max(0, currentUsd + changeUsd);
+            await authFetch(`/api/goals/${id}`, { method: 'PUT', body: JSON.stringify({ current_amount: newAmountUsd }) });
             loadAllData();
         }
 
@@ -923,27 +991,30 @@
 
         async function saveRecurringBill() {
             const name = document.getElementById('rec-name').value;
-            const amount = parseFloat(document.getElementById('rec-amount').value);
+            const rawAmount = parseFloat(document.getElementById('rec-amount').value);
             const due_day = parseInt(document.getElementById('rec-due').value) || 1;
             const category_name = document.getElementById('rec-category').value;
 
-            if (!name || isNaN(amount)) return alert("Name and amount required.");
+            if (!name || isNaN(rawAmount)) return alert("Name and amount required.");
 
-            await authFetch('/api/recurring', { method: 'POST', body: JSON.stringify({ name, amount, billing_cycle: 'monthly', category_name, due_day }) });
+            await authFetch('/api/recurring', { 
+                method: 'POST', 
+                body: JSON.stringify({ name, amount: unconvert(rawAmount), billing_cycle: 'monthly', category_name, due_day }) 
+            });
             document.getElementById('recurring-modal').classList.add('hidden');
             loadAllData();
         }
 
-        async function payRecurring(name, amount, category_name) {
+        async function payRecurring(name, amountUsd, category_name) {
             const payload = {
                 description: `Bill: ${name}`,
-                amount: amount,
+                amount: amountUsd,
                 type: 'expense',
                 category_name: category_name,
                 date: new Date().toISOString().slice(0, 10)
             };
             await authFetch('/api/transactions', { method: 'POST', body: JSON.stringify(payload) });
-            alert(`Logged ${fmt(amount)} expense for ${name}!`);
+            alert(`Logged ${fmt(amountUsd)} expense for ${name}!`);
             loadAllData();
         }
 
@@ -965,8 +1036,8 @@
 
         function renderCharts(categories) {
             const labels = categories.map(c => c.name);
-            const spentData = categories.map(c => c.total_spent);
-            const limitData = categories.map(c => c.target_limit);
+            const spentData = categories.map(c => convert(c.total_spent));
+            const limitData = categories.map(c => convert(c.target_limit));
 
             if (categoryChart) categoryChart.destroy();
             if (comparisonChart) comparisonChart.destroy();
