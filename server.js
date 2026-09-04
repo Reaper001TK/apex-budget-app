@@ -5,6 +5,8 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const compression = require('compression');
+const nodemailer = require('nodemailer');
+const dns = require('dns').promises;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,6 +23,41 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
+
+// Configure Email Transporter (Supports custom SMTP or Ethereal/Console fallback)
+let mailTransporter;
+if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+    mailTransporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT) || 587,
+        secure: process.env.SMTP_PORT == 465,
+        auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS
+        }
+    });
+} else {
+    // Ethereal/Console Fallback Transporter
+    mailTransporter = nodemailer.createTransport({
+        host: 'smtp.ethereal.email',
+        port: 587,
+        auth: { user: 'ethereal.user@ethereal.email', pass: 'ethereal_pass' }
+    });
+}
+
+// Function: Verify Domain MX Records (Checks if domain can actually receive mail)
+async function isValidEmailDomain(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) return false;
+
+    const domain = email.split('@')[1];
+    try {
+        const mxRecords = await dns.resolveMx(domain);
+        return mxRecords && mxRecords.length > 0;
+    } catch (err) {
+        return false; // Domain has no MX records or doesn't exist
+    }
+}
 
 // --- LIVE CURRENCY EXCHANGE RATE ENGINE ---
 let cachedRates = { USD: 1, EUR: 0.92, GBP: 0.79, JPY: 155.0, INR: 83.5, CAD: 1.36, AUD: 1.51, BRL: 5.4, MXN: 18.2, CHF: 0.89, KRW: 1375.0 };
@@ -55,21 +92,27 @@ async function initDb() {
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 currency TEXT DEFAULT '$',
+                is_verified BOOLEAN DEFAULT FALSE,
+                verification_code TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
+        // Migration: Add columns to users if missing
         await pool.query(`
             DO $$
             BEGIN
                 IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='currency'
+                    SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_verified'
                 ) THEN
-                    ALTER TABLE users ADD COLUMN currency TEXT DEFAULT '$';
+                    ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT FALSE;
+                    ALTER TABLE users ADD COLUMN verification_code TEXT;
                 END IF;
             END $$;
         `);
 
+        // Auto-verify existing accounts so older accounts aren't locked out
+        await pool.query(`UPDATE users SET is_verified = TRUE WHERE is_verified IS NULL;`);
         await pool.query(`UPDATE users SET currency = '$' WHERE currency IS NULL;`);
 
         await pool.query(`
@@ -82,9 +125,20 @@ async function initDb() {
         `);
 
         await pool.query(`
+            CREATE TABLE IF NOT EXISTS financial_accounts (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                type TEXT CHECK(type IN ('checking', 'savings', 'investment', 'credit_card', 'loan')) NOT NULL,
+                balance NUMERIC DEFAULT 0
+            );
+        `);
+
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                account_id INTEGER REFERENCES financial_accounts(id) ON DELETE SET NULL,
                 description TEXT NOT NULL,
                 amount NUMERIC NOT NULL,
                 type TEXT NOT NULL,
@@ -92,16 +146,6 @@ async function initDb() {
                 date TEXT NOT NULL,
                 receipt_image TEXT
             );
-        `);
-
-        // Migration: Enable 'transfer' in transaction types
-        await pool.query(`
-            DO $$
-            BEGIN
-                ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
-                ALTER TABLE transactions ADD CONSTRAINT transactions_type_check CHECK (type IN ('income', 'expense', 'transfer'));
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
         `);
 
         await pool.query(`
@@ -128,16 +172,6 @@ async function initDb() {
         `);
 
         await pool.query(`
-            CREATE TABLE IF NOT EXISTS financial_accounts (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                type TEXT CHECK(type IN ('checking', 'savings', 'investment', 'credit_card', 'loan')) NOT NULL,
-                balance NUMERIC DEFAULT 0
-            );
-        `);
-
-        await pool.query(`
             CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON transactions(user_id, date DESC);
             CREATE INDEX IF NOT EXISTS idx_categories_user ON categories(user_id);
             CREATE INDEX IF NOT EXISTS idx_goals_user ON savings_goals(user_id);
@@ -145,7 +179,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
         `);
 
-        console.log('⚡ PostgreSQL Database & Account Transfer Engine Ready!');
+        console.log('⚡ PostgreSQL Database & Email Verification System Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -171,47 +205,121 @@ app.get('/api/rates', async (req, res) => {
     res.json({ base: 'USD', rates, last_updated: lastRatesFetch });
 });
 
-// --- AUTH ROUTES ---
+// --- AUTHENTICATION ROUTES WITH EMAIL VERIFICATION ---
 
+// 1. Register User & Send OTP
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
         const emailLower = email.toLowerCase().trim();
-        const existing = await pool.query('SELECT id FROM users WHERE email = $1', [emailLower]);
-        if (existing.rows.length > 0) return res.status(400).json({ error: 'Email is already registered.' });
 
+        // REAL EMAIL DOMAIN CHECK
+        const validDomain = await isValidEmailDomain(emailLower);
+        if (!validDomain) {
+            const domain = emailLower.split('@')[1] || 'entered';
+            return res.status(400).json({ error: `The domain '${domain}' cannot receive emails. Please enter a valid email address.` });
+        }
+
+        const existing = await pool.query('SELECT id, is_verified FROM users WHERE email = $1', [emailLower]);
+        if (existing.rows.length > 0) {
+            if (existing.rows[0].is_verified) {
+                return res.status(400).json({ error: 'Email is already registered. Please sign in.' });
+            }
+        }
+
+        // Generate 6-Digit OTP Code
+        const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
         const passwordHash = await bcrypt.hash(password, 10);
-        const userRes = await pool.query(
-            'INSERT INTO users (email, password_hash, currency) VALUES ($1, $2, $3) RETURNING id, email, currency',
-            [emailLower, passwordHash, '$']
-        );
-        const user = userRes.rows[0];
 
-        await pool.query(`
-            INSERT INTO categories (user_id, name, target_limit) VALUES
-            ($1, 'Housing & Utilities', 1500),
-            ($1, 'Groceries', 600),
-            ($1, 'Dining & Fun', 300),
-            ($1, 'Investments & Savings', 1000),
-            ($1, 'Transportation', 250);
-        `, [user.id]);
+        let user;
+        if (existing.rows.length > 0) {
+            // Update unverified existing record
+            const updateRes = await pool.query(
+                'UPDATE users SET password_hash = $1, verification_code = $2 WHERE email = $3 RETURNING id, email',
+                [passwordHash, verificationCode, emailLower]
+            );
+            user = updateRes.rows[0];
+        } else {
+            // Insert new user
+            const userRes = await pool.query(
+                'INSERT INTO users (email, password_hash, verification_code, is_verified) VALUES ($1, $2, $3, FALSE) RETURNING id, email',
+                [emailLower, passwordHash, verificationCode]
+            );
+            user = userRes.rows[0];
 
-        await pool.query(`
-            INSERT INTO financial_accounts (user_id, name, type, balance) VALUES
-            ($1, 'Primary Checking', 'checking', 2500),
-            ($1, 'Emergency Savings', 'savings', 5000),
-            ($1, 'Main Credit Card', 'credit_card', 450);
-        `, [user.id]);
+            // Seed starter categories & accounts
+            await pool.query(`
+                INSERT INTO categories (user_id, name, target_limit) VALUES
+                ($1, 'Housing & Utilities', 1500),
+                ($1, 'Groceries', 600),
+                ($1, 'Dining & Fun', 300),
+                ($1, 'Investments & Savings', 1000),
+                ($1, 'Transportation', 250);
+            `, [user.id]);
 
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-        res.json({ token, user });
+            await pool.query(`
+                INSERT INTO financial_accounts (user_id, name, type, balance) VALUES
+                ($1, 'Primary Checking', 'checking', 2500),
+                ($1, 'Emergency Savings', 'savings', 5000),
+                ($1, 'Main Credit Card', 'credit_card', 450);
+            `, [user.id]);
+        }
+
+        // Send Email Verification Code
+        console.log(`✉️ VERIFICATION CODE FOR ${emailLower}: [ ${verificationCode} ]`);
+        try {
+            await mailTransporter.sendMail({
+                from: '"ApexBudget SaaS" <no-reply@apexbudget.com>',
+                to: emailLower,
+                subject: 'Your ApexBudget Verification Code',
+                html: `
+                    <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #0f172a; color: #f8fafc; rounded-corner: 10px;">
+                        <h2 style="color: #3b82f6;">⚡ ApexBudget Verification</h2>
+                        <p>Welcome to ApexBudget! Your 6-digit email verification code is:</p>
+                        <h1 style="font-size: 32px; letter-spacing: 5px; color: #10b981; background: #1e293b; padding: 10px 20px; width: fit-content; border-radius: 8px;">${verificationCode}</h1>
+                        <p style="font-size: 12px; color: #94a3b8;">Enter this code on the registration screen to activate your account.</p>
+                    </div>
+                `
+            });
+        } catch (mailErr) {
+            console.error('Mail dispatch notice:', mailErr.message);
+        }
+
+        res.json({ requires_verification: true, email: emailLower, message: 'Verification code sent to your email.' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
+// 2. Verify OTP & Activate Account
+app.post('/api/auth/verify-email', async (req, res) => {
+    try {
+        const { email, code } = req.body;
+        if (!email || !code) return res.status(400).json({ error: 'Email and 6-digit code required.' });
+
+        const emailLower = email.toLowerCase().trim();
+        const userRes = await pool.query('SELECT * FROM users WHERE email = $1', [emailLower]);
+
+        if (userRes.rows.length === 0) return res.status(400).json({ error: 'User not found.' });
+
+        const user = userRes.rows[0];
+        if (user.verification_code !== code.trim()) {
+            return res.status(400).json({ error: 'Invalid 6-digit verification code. Please check your inbox or logs.' });
+        }
+
+        // Mark User as Verified
+        await pool.query('UPDATE users SET is_verified = TRUE, verification_code = NULL WHERE id = $1', [user.id]);
+
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ token, user: { id: user.id, email: user.email, currency: user.currency || '$' } });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 3. Login
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -223,6 +331,10 @@ app.post('/api/auth/login', async (req, res) => {
         const user = userRes.rows[0];
         const validPassword = await bcrypt.compare(password, user.password_hash);
         if (!validPassword) return res.status(400).json({ error: 'Invalid email or password.' });
+
+        if (user.is_verified === false) {
+            return res.status(400).json({ error: 'Email not verified. Please register again to receive a new code.' });
+        }
 
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
         res.json({ token, user: { id: user.id, email: user.email, currency: user.currency || '$' } });
@@ -284,20 +396,17 @@ app.post('/api/transfers', authenticateToken, async (req, res) => {
         const fromAcc = fromAccRes.rows[0];
         const toAcc = toAccRes.rows[0];
 
-        // Update Account Balances
         await pool.query('UPDATE financial_accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [amountNum, from_account_id, req.user.id]);
         await pool.query('UPDATE financial_accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [amountNum, to_account_id, req.user.id]);
 
-        // Log Transaction
         const desc = description ? `${description} (${fromAcc.name} ➔ ${toAcc.name})` : `Transfer: ${fromAcc.name} ➔ ${toAcc.name}`;
         const txRes = await pool.query(
-            'INSERT INTO transactions (user_id, description, amount, type, category_name, date) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-            [req.user.id, desc, amountNum, 'transfer', 'Transfer', date || new Date().toISOString().slice(0, 10)]
+            'INSERT INTO transactions (user_id, account_id, description, amount, type, category_name, date) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+            [req.user.id, from_account_id, desc, amountNum, 'transfer', 'Transfer', date || new Date().toISOString().slice(0, 10)]
         );
 
         res.json({ success: true, transaction: txRes.rows[0], fromAccount: fromAcc.name, toAccount: toAcc.name });
     } catch (err) {
-        console.error('Transfer API Error:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -382,7 +491,6 @@ app.post('/api/categories', authenticateToken, async (req, res) => {
 
         res.json(result.rows[0]);
     } catch (err) {
-        console.error('Error saving category:', err);
         res.status(400).json({ error: err.message });
     }
 });
@@ -416,15 +524,21 @@ app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
 app.get('/api/transactions', authenticateToken, async (req, res) => {
     try {
         const month = req.query.month;
-        let query = 'SELECT id, description, amount::float, type, category_name, date, receipt_image FROM transactions WHERE user_id = $1';
+        let query = `
+            SELECT t.id, t.description, t.amount::float, t.type, t.category_name, t.date, t.receipt_image, t.account_id,
+                   a.name AS account_name, a.type AS account_type
+            FROM transactions t
+            LEFT JOIN financial_accounts a ON a.id = t.account_id
+            WHERE t.user_id = $1
+        `;
         let params = [req.user.id];
         
         if (month) {
-            query += ' AND date LIKE $2 || \'%\'';
+            query += ' AND t.date LIKE $2 || \'%\'';
             params.push(month);
         }
         
-        query += ' ORDER BY date DESC, id DESC';
+        query += ' ORDER BY t.date DESC, t.id DESC';
         const result = await pool.query(query, params);
         res.json(result.rows);
     } catch (err) {
@@ -434,11 +548,39 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 
 app.post('/api/transactions', authenticateToken, async (req, res) => {
     try {
-        const { description, amount, type, category_name, date, receipt_image } = req.body;
+        const { description, amount, type, category_name, date, receipt_image, account_id } = req.body;
+        const amountNum = parseFloat(amount);
+
+        if (isNaN(amountNum) || !type || !category_name) {
+            return res.status(400).json({ error: 'Valid amount, type, and category required.' });
+        }
+
         const result = await pool.query(
-            'INSERT INTO transactions (user_id, description, amount, type, category_name, date, receipt_image) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-            [req.user.id, description, amount, type, category_name, date, receipt_image || null]
+            'INSERT INTO transactions (user_id, account_id, description, amount, type, category_name, date, receipt_image) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [req.user.id, account_id || null, description, amountNum, type, category_name, date, receipt_image || null]
         );
+
+        if (account_id) {
+            const accRes = await pool.query('SELECT type FROM financial_accounts WHERE id = $1 AND user_id = $2', [account_id, req.user.id]);
+            if (accRes.rows.length > 0) {
+                const isDebtAccount = ['credit_card', 'loan'].includes(accRes.rows[0].type);
+
+                if (type === 'expense') {
+                    if (isDebtAccount) {
+                        await pool.query('UPDATE financial_accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [amountNum, account_id, req.user.id]);
+                    } else {
+                        await pool.query('UPDATE financial_accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [amountNum, account_id, req.user.id]);
+                    }
+                } else if (type === 'income') {
+                    if (isDebtAccount) {
+                        await pool.query('UPDATE financial_accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [amountNum, account_id, req.user.id]);
+                    } else {
+                        await pool.query('UPDATE financial_accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [amountNum, account_id, req.user.id]);
+                    }
+                }
+            }
+        }
+
         res.json(result.rows[0]);
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -448,6 +590,33 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
 app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
     try {
         const id = parseInt(req.params.id);
+
+        const txRes = await pool.query('SELECT amount::float, type, account_id FROM transactions WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        
+        if (txRes.rows.length > 0) {
+            const tx = txRes.rows[0];
+            if (tx.account_id) {
+                const accRes = await pool.query('SELECT type FROM financial_accounts WHERE id = $1 AND user_id = $2', [tx.account_id, req.user.id]);
+                if (accRes.rows.length > 0) {
+                    const isDebtAccount = ['credit_card', 'loan'].includes(accRes.rows[0].type);
+
+                    if (tx.type === 'expense') {
+                        if (isDebtAccount) {
+                            await pool.query('UPDATE financial_accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [tx.amount, tx.account_id, req.user.id]);
+                        } else {
+                            await pool.query('UPDATE financial_accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [tx.amount, tx.account_id, req.user.id]);
+                        }
+                    } else if (tx.type === 'income') {
+                        if (isDebtAccount) {
+                            await pool.query('UPDATE financial_accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [tx.amount, tx.account_id, req.user.id]);
+                        } else {
+                            await pool.query('UPDATE financial_accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [tx.amount, tx.account_id, req.user.id]);
+                        }
+                    }
+                }
+            }
+        }
+
         await pool.query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [id, req.user.id]);
         res.json({ success: true, deletedId: id });
     } catch (err) {

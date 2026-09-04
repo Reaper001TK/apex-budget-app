@@ -23,6 +23,7 @@
                 <p id="auth-subtitle" class="text-xs text-slate-400">Sign in to manage your personal finances</p>
             </div>
 
+            <!-- LOGIN / REGISTER FORM -->
             <form id="auth-form" onsubmit="handleAuthSubmit(event)" class="space-y-4">
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">Email Address</label>
@@ -36,6 +37,21 @@
                 <div id="auth-error" class="hidden text-xs text-rose-400 bg-rose-500/10 p-2 rounded-lg border border-rose-500/20 text-center"></div>
 
                 <button type="submit" id="auth-submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 font-semibold py-2.5 rounded-lg text-sm transition">Sign In</button>
+            </form>
+
+            <!-- 6-DIGIT EMAIL VERIFICATION FORM -->
+            <form id="verify-form" onsubmit="handleVerifySubmit(event)" class="hidden space-y-4">
+                <div class="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl text-xs text-blue-300 text-center">
+                    ✉️ We sent a 6-digit verification code to <strong id="verify-email-display" class="text-white"></strong>. Please enter it below:
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 mb-1">6-Digit Verification Code</label>
+                    <input type="text" id="verify-code" required placeholder="123456" maxlength="6" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-center font-mono text-lg tracking-widest text-emerald-400 focus:outline-none focus:border-blue-500">
+                </div>
+
+                <div id="verify-error" class="hidden text-xs text-rose-400 bg-rose-500/10 p-2 rounded-lg border border-rose-500/20 text-center"></div>
+
+                <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 font-semibold py-2.5 rounded-lg text-sm transition">Activate Account</button>
             </form>
 
             <div class="text-center pt-2 text-xs text-slate-400">
@@ -205,6 +221,12 @@
                                 </div>
                             </div>
 
+                            <!-- BANK ACCOUNT LINK SELECTOR -->
+                            <div id="account-link-wrapper">
+                                <label class="block text-xs font-semibold text-slate-400 mb-1">Deduct / Deposit Account</label>
+                                <select id="tx-account" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"></select>
+                            </div>
+
                             <!-- TRANSFER ACCOUNT SELECTORS -->
                             <div id="transfer-accounts-wrapper" class="hidden grid grid-cols-2 gap-3 bg-slate-900/60 p-3 rounded-xl border border-indigo-500/30">
                                 <div>
@@ -256,7 +278,8 @@
                                     <tr>
                                         <th class="p-3">Date</th>
                                         <th class="p-3">Description</th>
-                                        <th class="p-3">Category / Type</th>
+                                        <th class="p-3">Category</th>
+                                        <th class="p-3">Account</th>
                                         <th class="p-3">Receipt</th>
                                         <th class="p-3 text-right">Amount</th>
                                         <th class="p-3 text-center">Action</th>
@@ -379,8 +402,8 @@
                     <p class="text-slate-300">Track checking/savings balances and move funds directly between accounts with the Transfer feature.</p>
                 </div>
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
-                    <span class="text-emerald-400 font-bold">2. Category Caps</span>
-                    <p class="text-slate-300">Set spending caps per category and track remaining budget color-coded in real time.</p>
+                    <span class="text-emerald-400 font-bold">2. Auto-Deduct Expenses</span>
+                    <p class="text-slate-300">Logging expenses automatically deducts money from your chosen bank account and updates Net Worth!</p>
                 </div>
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
                     <span class="text-purple-400 font-bold">3. Attach Receipts</span>
@@ -594,6 +617,8 @@
             document.getElementById('auth-toggle-text').innerText = isLoginMode ? "Don't have an account?" : 'Already have an account?';
             document.getElementById('auth-toggle-btn').innerText = isLoginMode ? 'Create Account' : 'Sign In';
             document.getElementById('auth-error').classList.add('hidden');
+            document.getElementById('auth-form').classList.remove('hidden');
+            document.getElementById('verify-form').classList.add('hidden');
         }
 
         async function handleAuthSubmit(e) {
@@ -615,8 +640,42 @@
                 const data = await res.json();
                 if (!res.ok) { errorDiv.innerText = data.error || 'Authentication failed.'; errorDiv.classList.remove('hidden'); return; }
 
+                if (data.requires_verification) {
+                    document.getElementById('auth-form').classList.add('hidden');
+                    document.getElementById('verify-form').classList.remove('hidden');
+                    document.getElementById('verify-email-display').innerText = data.email;
+                    showToast('✉️ Verification code sent!');
+                } else {
+                    localStorage.setItem('apex_token', data.token);
+                    localStorage.setItem('apex_user_email', data.user.email);
+                    showApp();
+                }
+            } catch (err) {
+                errorDiv.innerText = 'Network error. Please try again.';
+                errorDiv.classList.remove('hidden');
+            }
+        }
+
+        async function handleVerifySubmit(e) {
+            e.preventDefault();
+            const email = document.getElementById('verify-email-display').innerText;
+            const code = document.getElementById('verify-code').value;
+            const errorDiv = document.getElementById('verify-error');
+            errorDiv.classList.add('hidden');
+
+            try {
+                const res = await fetch('/api/auth/verify-email', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, code })
+                });
+
+                const data = await res.json();
+                if (!res.ok) { errorDiv.innerText = data.error || 'Verification failed.'; errorDiv.classList.remove('hidden'); return; }
+
                 localStorage.setItem('apex_token', data.token);
                 localStorage.setItem('apex_user_email', data.user.email);
+                showToast('🎉 Account activated successfully!');
                 showApp();
             } catch (err) {
                 errorDiv.innerText = 'Network error. Please try again.';
@@ -633,6 +692,8 @@
         function showAuth() {
             document.getElementById('view-auth').classList.remove('hidden');
             document.getElementById('view-main').classList.add('hidden');
+            document.getElementById('auth-form').classList.remove('hidden');
+            document.getElementById('verify-form').classList.add('hidden');
         }
 
         async function showApp() {
@@ -706,10 +767,12 @@
             document.getElementById('stat-assets').innerText = fmt(totalAssets);
             document.getElementById('stat-debts').innerText = fmt(totalDebts);
 
-            // Update Account Selectors for Transfers
+            const txAccSelect = document.getElementById('tx-account');
             const fromSelect = document.getElementById('tx-from-account');
             const toSelect = document.getElementById('tx-to-account');
+
             const accountOptions = loadedAccounts.map(a => `<option value="${a.id}">${a.name} (${fmt(a.balance)})</option>`).join('');
+            if (txAccSelect) txAccSelect.innerHTML = `<option value="">-- No Account Linked --</option>` + accountOptions;
             if (fromSelect) fromSelect.innerHTML = accountOptions;
             if (toSelect) toSelect.innerHTML = accountOptions;
 
@@ -934,15 +997,18 @@
         function toggleCategoryForType() {
             const type = document.getElementById('tx-type').value;
             const categoryWrapper = document.getElementById('category-select-wrapper');
+            const accountLinkWrapper = document.getElementById('account-link-wrapper');
             const transferWrapper = document.getElementById('transfer-accounts-wrapper');
             const receiptWrapper = document.getElementById('receipt-upload-wrapper');
 
             if (type === 'transfer') {
                 categoryWrapper.classList.add('hidden');
+                accountLinkWrapper.classList.add('hidden');
                 transferWrapper.classList.remove('hidden');
                 receiptWrapper.classList.add('hidden');
             } else {
                 categoryWrapper.classList.remove('hidden');
+                accountLinkWrapper.classList.remove('hidden');
                 transferWrapper.classList.add('hidden');
                 receiptWrapper.classList.remove('hidden');
                 if (type === 'income') {
@@ -967,6 +1033,7 @@
                                 ${isTransfer ? '↔️ Transfer' : t.category_name}
                             </span>
                         </td>
+                        <td class="p-3 text-xs text-slate-400">${t.account_name ? t.account_name : '-'}</td>
                         <td class="p-3">
                             ${t.receipt_image ? `<button onclick="viewReceipt(${t.id})" class="bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs px-2 py-1 rounded">📷 View</button>` : `<span class="text-xs text-slate-600">-</span>`}
                         </td>
@@ -1017,13 +1084,16 @@
 
                 showToast(`↔️ Transferred ${fmt(amountUsd)} between accounts!`);
             } else {
+                const accountIdVal = document.getElementById('tx-account').value;
+
                 const payload = {
                     description: document.getElementById('tx-desc').value,
                     amount: amountUsd,
                     type: txType,
                     category_name: document.getElementById('tx-category').value,
                     date: txDate,
-                    receipt_image: currentReceiptBase64
+                    receipt_image: currentReceiptBase64,
+                    account_id: accountIdVal ? parseInt(accountIdVal) : null
                 };
 
                 await authFetch('/api/transactions', { method: 'POST', body: JSON.stringify(payload) });
@@ -1032,7 +1102,7 @@
                     document.getElementById('global-month-filter').value = txMonth;
                     showToast(`📅 Logged transaction for ${txMonth}! Switched view to ${txMonth}.`);
                 } else {
-                    showToast('✅ Transaction saved!');
+                    showToast('✅ Transaction saved & bank balance synced!');
                 }
             }
 
@@ -1078,7 +1148,7 @@
 
         async function deleteTx(id) {
             await authFetch(`/api/transactions/${id}`, { method: 'DELETE' });
-            showToast('Transaction deleted');
+            showToast('Transaction deleted & balance refunded!');
             loadAllData();
         }
 

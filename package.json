@@ -1,7 +1,7 @@
 {
-  "name": "apex-budget-optimized",
+  "name": "apex-budget-email-verified",
   "version": "1.0.0",
-  "description": "Multi-User Full-stack Budgeting App - High Performance",
+  "description": "Multi-User Budget App with Real Email Verification & MX Record Checks",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,6 +12,7 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.9.13",
     "pg": "^8.12.0"
   }
 }
