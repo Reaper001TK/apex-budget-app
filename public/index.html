@@ -39,21 +39,6 @@
                 <button type="submit" id="auth-submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 font-semibold py-2.5 rounded-lg text-sm transition">Sign In</button>
             </form>
 
-            <!-- 6-DIGIT EMAIL VERIFICATION FORM -->
-            <form id="verify-form" onsubmit="handleVerifySubmit(event)" class="hidden space-y-4">
-                <div class="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl text-xs text-blue-300 text-center">
-                    ✉️ We sent a 6-digit verification code to <strong id="verify-email-display" class="text-white"></strong>. Please enter it below:
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-400 mb-1">6-Digit Verification Code</label>
-                    <input type="text" id="verify-code" required placeholder="123456" maxlength="6" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-center font-mono text-lg tracking-widest text-emerald-400 focus:outline-none focus:border-blue-500">
-                </div>
-
-                <div id="verify-error" class="hidden text-xs text-rose-400 bg-rose-500/10 p-2 rounded-lg border border-rose-500/20 text-center"></div>
-
-                <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 font-semibold py-2.5 rounded-lg text-sm transition">Activate Account</button>
-            </form>
-
             <div class="text-center pt-2 text-xs text-slate-400">
                 <span id="auth-toggle-text">Don't have an account?</span>
                 <button onclick="toggleAuthMode()" id="auth-toggle-btn" class="text-blue-400 font-semibold hover:underline ml-1">Create Account</button>
@@ -617,8 +602,6 @@
             document.getElementById('auth-toggle-text').innerText = isLoginMode ? "Don't have an account?" : 'Already have an account?';
             document.getElementById('auth-toggle-btn').innerText = isLoginMode ? 'Create Account' : 'Sign In';
             document.getElementById('auth-error').classList.add('hidden');
-            document.getElementById('auth-form').classList.remove('hidden');
-            document.getElementById('verify-form').classList.add('hidden');
         }
 
         async function handleAuthSubmit(e) {
@@ -640,42 +623,8 @@
                 const data = await res.json();
                 if (!res.ok) { errorDiv.innerText = data.error || 'Authentication failed.'; errorDiv.classList.remove('hidden'); return; }
 
-                if (data.requires_verification) {
-                    document.getElementById('auth-form').classList.add('hidden');
-                    document.getElementById('verify-form').classList.remove('hidden');
-                    document.getElementById('verify-email-display').innerText = data.email;
-                    showToast('✉️ Verification code sent!');
-                } else {
-                    localStorage.setItem('apex_token', data.token);
-                    localStorage.setItem('apex_user_email', data.user.email);
-                    showApp();
-                }
-            } catch (err) {
-                errorDiv.innerText = 'Network error. Please try again.';
-                errorDiv.classList.remove('hidden');
-            }
-        }
-
-        async function handleVerifySubmit(e) {
-            e.preventDefault();
-            const email = document.getElementById('verify-email-display').innerText;
-            const code = document.getElementById('verify-code').value;
-            const errorDiv = document.getElementById('verify-error');
-            errorDiv.classList.add('hidden');
-
-            try {
-                const res = await fetch('/api/auth/verify-email', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, code })
-                });
-
-                const data = await res.json();
-                if (!res.ok) { errorDiv.innerText = data.error || 'Verification failed.'; errorDiv.classList.remove('hidden'); return; }
-
                 localStorage.setItem('apex_token', data.token);
                 localStorage.setItem('apex_user_email', data.user.email);
-                showToast('🎉 Account activated successfully!');
                 showApp();
             } catch (err) {
                 errorDiv.innerText = 'Network error. Please try again.';
@@ -692,8 +641,6 @@
         function showAuth() {
             document.getElementById('view-auth').classList.remove('hidden');
             document.getElementById('view-main').classList.add('hidden');
-            document.getElementById('auth-form').classList.remove('hidden');
-            document.getElementById('verify-form').classList.add('hidden');
         }
 
         async function showApp() {

@@ -5,8 +5,6 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const compression = require('compression');
-const nodemailer = require('nodemailer');
-const dns = require('dns').promises;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,41 +21,6 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
-
-// Configure Email Transporter (Supports custom SMTP or Ethereal/Console fallback)
-let mailTransporter;
-if (process.env.SMTP_HOST && process.env.SMTP_USER) {
-    mailTransporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT) || 587,
-        secure: process.env.SMTP_PORT == 465,
-        auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS
-        }
-    });
-} else {
-    // Ethereal/Console Fallback Transporter
-    mailTransporter = nodemailer.createTransport({
-        host: 'smtp.ethereal.email',
-        port: 587,
-        auth: { user: 'ethereal.user@ethereal.email', pass: 'ethereal_pass' }
-    });
-}
-
-// Function: Verify Domain MX Records (Checks if domain can actually receive mail)
-async function isValidEmailDomain(email) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) return false;
-
-    const domain = email.split('@')[1];
-    try {
-        const mxRecords = await dns.resolveMx(domain);
-        return mxRecords && mxRecords.length > 0;
-    } catch (err) {
-        return false; // Domain has no MX records or doesn't exist
-    }
-}
 
 // --- LIVE CURRENCY EXCHANGE RATE ENGINE ---
 let cachedRates = { USD: 1, EUR: 0.92, GBP: 0.79, JPY: 155.0, INR: 83.5, CAD: 1.36, AUD: 1.51, BRL: 5.4, MXN: 18.2, CHF: 0.89, KRW: 1375.0 };
@@ -92,28 +55,24 @@ async function initDb() {
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 currency TEXT DEFAULT '$',
-                is_verified BOOLEAN DEFAULT FALSE,
-                verification_code TEXT,
+                is_verified BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
-        // Migration: Add columns to users if missing
         await pool.query(`
             DO $$
             BEGIN
                 IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_verified'
+                    SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='currency'
                 ) THEN
-                    ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT FALSE;
-                    ALTER TABLE users ADD COLUMN verification_code TEXT;
+                    ALTER TABLE users ADD COLUMN currency TEXT DEFAULT '$';
                 END IF;
             END $$;
         `);
 
-        // Auto-verify existing accounts so older accounts aren't locked out
-        await pool.query(`UPDATE users SET is_verified = TRUE WHERE is_verified IS NULL;`);
         await pool.query(`UPDATE users SET currency = '$' WHERE currency IS NULL;`);
+        await pool.query(`UPDATE users SET is_verified = TRUE WHERE is_verified IS NULL;`);
 
         await pool.query(`
             CREATE TABLE IF NOT EXISTS categories (
@@ -149,6 +108,15 @@ async function initDb() {
         `);
 
         await pool.query(`
+            DO $$
+            BEGIN
+                ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
+                ALTER TABLE transactions ADD CONSTRAINT transactions_type_check CHECK (type IN ('income', 'expense', 'transfer'));
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+        `);
+
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS savings_goals (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -179,7 +147,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
         `);
 
-        console.log('⚡ PostgreSQL Database & Email Verification System Ready!');
+        console.log('⚡ PostgreSQL Database & Instant Registration System Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -205,9 +173,9 @@ app.get('/api/rates', async (req, res) => {
     res.json({ base: 'USD', rates, last_updated: lastRatesFetch });
 });
 
-// --- AUTHENTICATION ROUTES WITH EMAIL VERIFICATION ---
+// --- AUTHENTICATION ROUTES ---
 
-// 1. Register User & Send OTP
+// 1. Instant Account Registration
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -215,111 +183,51 @@ app.post('/api/auth/register', async (req, res) => {
 
         const emailLower = email.toLowerCase().trim();
 
-        // REAL EMAIL DOMAIN CHECK
-        const validDomain = await isValidEmailDomain(emailLower);
-        if (!validDomain) {
-            const domain = emailLower.split('@')[1] || 'entered';
-            return res.status(400).json({ error: `The domain '${domain}' cannot receive emails. Please enter a valid email address.` });
+        // Strict Email Format Validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(emailLower)) {
+            return res.status(400).json({ error: 'Please enter a valid email address (e.g. name@example.com).' });
         }
 
-        const existing = await pool.query('SELECT id, is_verified FROM users WHERE email = $1', [emailLower]);
+        const existing = await pool.query('SELECT id FROM users WHERE email = $1', [emailLower]);
         if (existing.rows.length > 0) {
-            if (existing.rows[0].is_verified) {
-                return res.status(400).json({ error: 'Email is already registered. Please sign in.' });
-            }
+            return res.status(400).json({ error: 'This email is already registered. Please sign in instead.' });
         }
 
-        // Generate 6-Digit OTP Code
-        const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
         const passwordHash = await bcrypt.hash(password, 10);
-
-        let user;
-        if (existing.rows.length > 0) {
-            // Update unverified existing record
-            const updateRes = await pool.query(
-                'UPDATE users SET password_hash = $1, verification_code = $2 WHERE email = $3 RETURNING id, email',
-                [passwordHash, verificationCode, emailLower]
-            );
-            user = updateRes.rows[0];
-        } else {
-            // Insert new user
-            const userRes = await pool.query(
-                'INSERT INTO users (email, password_hash, verification_code, is_verified) VALUES ($1, $2, $3, FALSE) RETURNING id, email',
-                [emailLower, passwordHash, verificationCode]
-            );
-            user = userRes.rows[0];
-
-            // Seed starter categories & accounts
-            await pool.query(`
-                INSERT INTO categories (user_id, name, target_limit) VALUES
-                ($1, 'Housing & Utilities', 1500),
-                ($1, 'Groceries', 600),
-                ($1, 'Dining & Fun', 300),
-                ($1, 'Investments & Savings', 1000),
-                ($1, 'Transportation', 250);
-            `, [user.id]);
-
-            await pool.query(`
-                INSERT INTO financial_accounts (user_id, name, type, balance) VALUES
-                ($1, 'Primary Checking', 'checking', 2500),
-                ($1, 'Emergency Savings', 'savings', 5000),
-                ($1, 'Main Credit Card', 'credit_card', 450);
-            `, [user.id]);
-        }
-
-        // Send Email Verification Code
-        console.log(`✉️ VERIFICATION CODE FOR ${emailLower}: [ ${verificationCode} ]`);
-        try {
-            await mailTransporter.sendMail({
-                from: '"ApexBudget SaaS" <no-reply@apexbudget.com>',
-                to: emailLower,
-                subject: 'Your ApexBudget Verification Code',
-                html: `
-                    <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #0f172a; color: #f8fafc; rounded-corner: 10px;">
-                        <h2 style="color: #3b82f6;">⚡ ApexBudget Verification</h2>
-                        <p>Welcome to ApexBudget! Your 6-digit email verification code is:</p>
-                        <h1 style="font-size: 32px; letter-spacing: 5px; color: #10b981; background: #1e293b; padding: 10px 20px; width: fit-content; border-radius: 8px;">${verificationCode}</h1>
-                        <p style="font-size: 12px; color: #94a3b8;">Enter this code on the registration screen to activate your account.</p>
-                    </div>
-                `
-            });
-        } catch (mailErr) {
-            console.error('Mail dispatch notice:', mailErr.message);
-        }
-
-        res.json({ requires_verification: true, email: emailLower, message: 'Verification code sent to your email.' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// 2. Verify OTP & Activate Account
-app.post('/api/auth/verify-email', async (req, res) => {
-    try {
-        const { email, code } = req.body;
-        if (!email || !code) return res.status(400).json({ error: 'Email and 6-digit code required.' });
-
-        const emailLower = email.toLowerCase().trim();
-        const userRes = await pool.query('SELECT * FROM users WHERE email = $1', [emailLower]);
-
-        if (userRes.rows.length === 0) return res.status(400).json({ error: 'User not found.' });
-
+        const userRes = await pool.query(
+            'INSERT INTO users (email, password_hash, currency, is_verified) VALUES ($1, $2, $3, TRUE) RETURNING id, email, currency',
+            [emailLower, passwordHash, '$']
+        );
         const user = userRes.rows[0];
-        if (user.verification_code !== code.trim()) {
-            return res.status(400).json({ error: 'Invalid 6-digit verification code. Please check your inbox or logs.' });
-        }
 
-        // Mark User as Verified
-        await pool.query('UPDATE users SET is_verified = TRUE, verification_code = NULL WHERE id = $1', [user.id]);
+        // Seed default categories
+        await pool.query(`
+            INSERT INTO categories (user_id, name, target_limit) VALUES
+            ($1, 'Housing & Utilities', 1500),
+            ($1, 'Groceries', 600),
+            ($1, 'Dining & Fun', 300),
+            ($1, 'Investments & Savings', 1000),
+            ($1, 'Transportation', 250);
+        `, [user.id]);
+
+        // Seed default accounts
+        await pool.query(`
+            INSERT INTO financial_accounts (user_id, name, type, balance) VALUES
+            ($1, 'Primary Checking', 'checking', 2500),
+            ($1, 'Emergency Savings', 'savings', 5000),
+            ($1, 'Main Credit Card', 'credit_card', 450);
+        `, [user.id]);
 
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-        res.json({ token, user: { id: user.id, email: user.email, currency: user.currency || '$' } });
+        res.json({ token, user });
     } catch (err) {
+        console.error('Registration Error:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// 3. Login
+// 2. Login
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -331,10 +239,6 @@ app.post('/api/auth/login', async (req, res) => {
         const user = userRes.rows[0];
         const validPassword = await bcrypt.compare(password, user.password_hash);
         if (!validPassword) return res.status(400).json({ error: 'Invalid email or password.' });
-
-        if (user.is_verified === false) {
-            return res.status(400).json({ error: 'Email not verified. Please register again to receive a new code.' });
-        }
 
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
         res.json({ token, user: { id: user.id, email: user.email, currency: user.currency || '$' } });
