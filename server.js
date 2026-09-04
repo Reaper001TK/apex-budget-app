@@ -46,7 +46,7 @@ async function getExchangeRates() {
     return cachedRates;
 }
 
-// Initialize Relational Schema
+// Initialize Relational Schema & Migration
 async function initDb() {
     try {
         await pool.query(`
@@ -87,11 +87,21 @@ async function initDb() {
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 description TEXT NOT NULL,
                 amount NUMERIC NOT NULL,
-                type TEXT CHECK(type IN ('income', 'expense')) NOT NULL,
+                type TEXT NOT NULL,
                 category_name TEXT NOT NULL,
                 date TEXT NOT NULL,
                 receipt_image TEXT
             );
+        `);
+
+        // Migration: Enable 'transfer' in transaction types
+        await pool.query(`
+            DO $$
+            BEGIN
+                ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
+                ALTER TABLE transactions ADD CONSTRAINT transactions_type_check CHECK (type IN ('income', 'expense', 'transfer'));
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
         `);
 
         await pool.query(`
@@ -135,7 +145,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
         `);
 
-        console.log('⚡ PostgreSQL Database Ready!');
+        console.log('⚡ PostgreSQL Database & Account Transfer Engine Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -249,6 +259,49 @@ app.delete('/api/user/account', authenticateToken, async (req, res) => {
     }
 });
 
+// --- ACCOUNT TRANSFER API ---
+
+app.post('/api/transfers', authenticateToken, async (req, res) => {
+    try {
+        const { from_account_id, to_account_id, amount, date, description } = req.body;
+        const amountNum = parseFloat(amount);
+
+        if (!from_account_id || !to_account_id || isNaN(amountNum) || amountNum <= 0) {
+            return res.status(400).json({ error: 'Source account, destination account, and positive amount required.' });
+        }
+
+        if (parseInt(from_account_id) === parseInt(to_account_id)) {
+            return res.status(400).json({ error: 'Source and destination accounts must be different.' });
+        }
+
+        const fromAccRes = await pool.query('SELECT name FROM financial_accounts WHERE id = $1 AND user_id = $2', [from_account_id, req.user.id]);
+        const toAccRes = await pool.query('SELECT name FROM financial_accounts WHERE id = $1 AND user_id = $2', [to_account_id, req.user.id]);
+
+        if (fromAccRes.rows.length === 0 || toAccRes.rows.length === 0) {
+            return res.status(404).json({ error: 'One or both financial accounts not found.' });
+        }
+
+        const fromAcc = fromAccRes.rows[0];
+        const toAcc = toAccRes.rows[0];
+
+        // Update Account Balances
+        await pool.query('UPDATE financial_accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [amountNum, from_account_id, req.user.id]);
+        await pool.query('UPDATE financial_accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [amountNum, to_account_id, req.user.id]);
+
+        // Log Transaction
+        const desc = description ? `${description} (${fromAcc.name} ➔ ${toAcc.name})` : `Transfer: ${fromAcc.name} ➔ ${toAcc.name}`;
+        const txRes = await pool.query(
+            'INSERT INTO transactions (user_id, description, amount, type, category_name, date) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+            [req.user.id, desc, amountNum, 'transfer', 'Transfer', date || new Date().toISOString().slice(0, 10)]
+        );
+
+        res.json({ success: true, transaction: txRes.rows[0], fromAccount: fromAcc.name, toAccount: toAcc.name });
+    } catch (err) {
+        console.error('Transfer API Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- SUMMARY API ---
 
 app.get('/api/summary', authenticateToken, async (req, res) => {
@@ -277,7 +330,7 @@ app.get('/api/summary', authenticateToken, async (req, res) => {
     }
 });
 
-// --- CATEGORIES API (BULLETPROOF FIX) ---
+// --- CATEGORIES API ---
 
 app.get('/api/categories', authenticateToken, async (req, res) => {
     try {
@@ -309,7 +362,6 @@ app.post('/api/categories', authenticateToken, async (req, res) => {
         const cleanName = name.trim();
         const limitNum = parseFloat(limit);
 
-        // Check if category exists
         const existing = await pool.query(
             'SELECT id FROM categories WHERE user_id = $1 AND LOWER(name) = LOWER($2)',
             [req.user.id, cleanName]
