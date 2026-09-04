@@ -28,7 +28,6 @@ let lastRatesFetch = 0;
 
 async function getExchangeRates() {
     const now = Date.now();
-    // Refresh live rates every 1 hour (3600000 ms)
     if (now - lastRatesFetch > 3600000) {
         try {
             const response = await fetch('https://open.er-api.com/v6/latest/USD');
@@ -47,7 +46,7 @@ async function getExchangeRates() {
     return cachedRates;
 }
 
-// Initialize Relational Schema & Migration
+// Initialize Relational Schema
 async function initDb() {
     try {
         await pool.query(`
@@ -74,38 +73,12 @@ async function initDb() {
         await pool.query(`UPDATE users SET currency = '$' WHERE currency IS NULL;`);
 
         await pool.query(`
-            DO $$ 
-            BEGIN 
-                IF EXISTS (
-                    SELECT 1 FROM information_schema.tables WHERE table_name='categories'
-                ) AND NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns WHERE table_name='categories' AND column_name='user_id'
-                ) THEN 
-                    DROP TABLE IF EXISTS transactions CASCADE;
-                    DROP TABLE IF EXISTS categories CASCADE;
-                END IF;
-            END $$;
-        `);
-
-        await pool.query(`
             CREATE TABLE IF NOT EXISTS categories (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 target_limit NUMERIC NOT NULL
             );
-        `);
-
-        await pool.query(`
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_constraint WHERE conname = 'categories_user_id_name_key'
-                ) THEN
-                    ALTER TABLE categories ADD CONSTRAINT categories_user_id_name_key UNIQUE (user_id, name);
-                END IF;
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
         `);
 
         await pool.query(`
@@ -162,7 +135,7 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
         `);
 
-        console.log('⚡ PostgreSQL Database & Live Currency Conversion Engine Ready!');
+        console.log('⚡ PostgreSQL Database Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -304,7 +277,7 @@ app.get('/api/summary', authenticateToken, async (req, res) => {
     }
 });
 
-// --- CATEGORIES API ---
+// --- CATEGORIES API (BULLETPROOF FIX) ---
 
 app.get('/api/categories', authenticateToken, async (req, res) => {
     try {
@@ -333,16 +306,31 @@ app.post('/api/categories', authenticateToken, async (req, res) => {
         const { name, limit } = req.body;
         if (!name || isNaN(limit)) return res.status(400).json({ error: 'Valid category name and limit required' });
 
-        const result = await pool.query(
-            `INSERT INTO categories (user_id, name, target_limit) 
-             VALUES ($1, $2, $3) 
-             ON CONFLICT (user_id, name) 
-             DO UPDATE SET target_limit = EXCLUDED.target_limit 
-             RETURNING *`,
-            [req.user.id, name.trim(), limit]
+        const cleanName = name.trim();
+        const limitNum = parseFloat(limit);
+
+        // Check if category exists
+        const existing = await pool.query(
+            'SELECT id FROM categories WHERE user_id = $1 AND LOWER(name) = LOWER($2)',
+            [req.user.id, cleanName]
         );
+
+        let result;
+        if (existing.rows.length > 0) {
+            result = await pool.query(
+                'UPDATE categories SET target_limit = $1 WHERE id = $2 AND user_id = $3 RETURNING *',
+                [limitNum, existing.rows[0].id, req.user.id]
+            );
+        } else {
+            result = await pool.query(
+                'INSERT INTO categories (user_id, name, target_limit) VALUES ($1, $2, $3) RETURNING *',
+                [req.user.id, cleanName, limitNum]
+            );
+        }
+
         res.json(result.rows[0]);
     } catch (err) {
+        console.error('Error saving category:', err);
         res.status(400).json({ error: err.message });
     }
 });

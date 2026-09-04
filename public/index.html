@@ -175,7 +175,7 @@
                         <h2 class="text-lg font-bold">Category Budget Planner</h2>
                         <p class="text-xs text-slate-400">Change any budget limit below and press Enter to save.</p>
                     </div>
-                    <button onclick="document.getElementById('cat-modal').classList.remove('hidden')" class="bg-blue-600 hover:bg-blue-700 text-sm font-semibold px-4 py-2 rounded-lg">+ Add Category</button>
+                    <button onclick="openCategoryModal()" class="bg-blue-600 hover:bg-blue-700 text-sm font-semibold px-4 py-2 rounded-lg">+ Add Category</button>
                 </div>
                 <div id="budget-progress-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
             </div>
@@ -298,6 +298,19 @@
         </div>
     </div>
 
+    <!-- MODAL: ADD CATEGORY -->
+    <div id="cat-modal" class="fixed inset-0 bg-black/70 flex items-center justify-center hidden z-50">
+        <div class="bg-slate-800 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4">
+            <h3 class="text-lg font-bold">New Category</h3>
+            <input type="text" id="cat-name" onkeydown="if(event.key==='Enter') saveCategory();" placeholder="Category Name (e.g. Travel, Shopping)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
+            <input type="number" step="10" id="cat-limit" onkeydown="if(event.key==='Enter') saveCategory();" placeholder="Monthly Target Limit" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
+            <div class="flex justify-end space-x-2">
+                <button onclick="document.getElementById('cat-modal').classList.add('hidden')" class="px-4 py-2 text-xs bg-slate-700 rounded-lg">Cancel</button>
+                <button onclick="saveCategory()" class="px-4 py-2 text-xs bg-blue-600 font-semibold rounded-lg">Save Category</button>
+            </div>
+        </div>
+    </div>
+
     <!-- MODAL: GOAL -->
     <div id="goal-modal" class="fixed inset-0 bg-black/70 flex items-center justify-center hidden z-50">
         <div class="bg-slate-800 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4">
@@ -352,8 +365,8 @@
                     <p class="text-slate-300">Set spending caps per category and track remaining budget color-coded in real time.</p>
                 </div>
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
-                    <span class="text-purple-400 font-bold">3. Backdated Expenses & Receipts</span>
-                    <p class="text-slate-300">Log past transactions anytime! Use the quick presets (Yesterday, Last Month) or pick any past date.</p>
+                    <span class="text-purple-400 font-bold">3. Attach Receipts</span>
+                    <p class="text-slate-300">Snap receipt photos directly with your phone camera or computer and view them anytime.</p>
                 </div>
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
                     <span class="text-indigo-400 font-bold">4. AI Insights Coach</span>
@@ -428,6 +441,13 @@
             const currentActualMonth = new Date().toISOString().slice(0, 7);
             document.getElementById('global-month-filter').value = currentActualMonth;
             loadAllData();
+        }
+
+        function openCategoryModal() {
+            document.getElementById('cat-name').value = '';
+            document.getElementById('cat-limit').value = '';
+            document.getElementById('cat-modal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('cat-name').focus(), 100);
         }
 
         function getConversionRate() {
@@ -934,7 +954,6 @@
             document.getElementById('tx-amount').value = '';
             clearReceiptSelection();
 
-            // SMART AUTO-SWITCH MONTH VIEW IF BACKDATED
             if (txMonth !== activeMonth) {
                 document.getElementById('global-month-filter').value = txMonth;
                 showToast(`📅 Logged transaction for ${txMonth}! Switched view to ${txMonth}.`);
@@ -951,16 +970,31 @@
             const name = nameInput.value.trim();
             const rawLimit = parseFloat(limitInput.value);
 
-            if (!name || isNaN(rawLimit)) return alert("Valid name and limit required.");
+            if (!name) return alert("Please enter a category name (e.g. Travel, Shopping).");
+            if (isNaN(rawLimit) || rawLimit < 0) return alert("Please enter a valid monthly limit (e.g. 500).");
 
             const limitUsd = unconvert(rawLimit);
 
-            const res = await authFetch('/api/categories', { method: 'POST', body: JSON.stringify({ name, limit: limitUsd }) });
-            if (res.ok) {
-                nameInput.value = ''; limitInput.value = '';
+            try {
+                const res = await authFetch('/api/categories', { 
+                    method: 'POST', 
+                    body: JSON.stringify({ name, limit: limitUsd }) 
+                });
+
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(data.error || "Failed to save category.");
+                    return;
+                }
+
+                nameInput.value = '';
+                limitInput.value = '';
                 document.getElementById('cat-modal').classList.add('hidden');
-                showToast('Category saved!');
+                showToast('Category saved successfully!');
                 loadAllData();
+            } catch (err) {
+                console.error("Save Category Error:", err);
+                alert("An error occurred while saving the category.");
             }
         }
 
