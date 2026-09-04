@@ -9,6 +9,11 @@
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
 
+    <!-- TOAST NOTIFICATION -->
+    <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 transition-all duration-300 bg-blue-600 text-white font-medium text-xs px-4 py-3 rounded-xl shadow-2xl flex items-center space-x-2 border border-blue-400/30">
+        <span id="toast-message">Notification</span>
+    </div>
+
     <!-- AUTH SCREEN -->
     <div id="view-auth" class="min-h-screen flex items-center justify-center p-4">
         <div class="bg-slate-800 border border-slate-700 p-8 rounded-2xl w-full max-w-md space-y-6 shadow-2xl">
@@ -74,8 +79,7 @@
                         <option value="₩">₩ (KRW)</option>
                     </select>
 
-                    <!-- LIVE CONVERSION BADGE -->
-                    <span id="live-rate-badge" class="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-[10px] px-2 py-1 rounded font-mono hidden md:inline">🌐 1 USD = 1.00 USD</span>
+                    <span id="live-rate-badge" class="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-[10px] px-2 py-1 rounded font-mono hidden md:inline">🌐 1 USD Base</span>
 
                     <!-- MONTH FILTER -->
                     <div class="flex items-center space-x-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
@@ -92,6 +96,15 @@
 
         <main class="max-w-7xl mx-auto px-4 py-6 flex-grow w-full space-y-6">
             
+            <!-- HISTORICAL MONTH BANNER -->
+            <div id="historical-banner" class="hidden bg-amber-500/10 border border-amber-500/30 p-3 rounded-2xl flex justify-between items-center text-xs">
+                <div class="flex items-center space-x-2 text-amber-400 font-medium">
+                    <span>📅</span>
+                    <span>Viewing past financial records for <strong id="historical-month-label" class="text-white"></strong>.</span>
+                </div>
+                <button onclick="jumpToCurrentMonth()" class="bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold px-3 py-1 rounded-lg transition">⚡ Jump to Current Month</button>
+            </div>
+
             <!-- DASHBOARD -->
             <div id="view-dashboard" class="space-y-6">
                 <!-- AI INSIGHTS CARD -->
@@ -195,7 +208,14 @@
                                 <select id="tx-category" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white"></select>
                             </div>
                             <div>
-                                <label class="block text-xs font-semibold text-slate-400 mb-1">Date</label>
+                                <div class="flex justify-between items-center mb-1">
+                                    <label class="block text-xs font-semibold text-slate-400">Date</label>
+                                    <div class="flex space-x-1">
+                                        <button type="button" onclick="setTxDatePreset('today')" class="bg-slate-700 hover:bg-slate-600 text-[10px] px-1.5 py-0.5 rounded text-slate-300 transition">Today</button>
+                                        <button type="button" onclick="setTxDatePreset('yesterday')" class="bg-slate-700 hover:bg-slate-600 text-[10px] px-1.5 py-0.5 rounded text-slate-300 transition">Yesterday</button>
+                                        <button type="button" onclick="setTxDatePreset('last_month')" class="bg-slate-700 hover:bg-slate-600 text-[10px] px-1.5 py-0.5 rounded text-slate-300 transition">Last Month</button>
+                                    </div>
+                                </div>
                                 <input type="date" id="tx-date" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
                             </div>
                             <div>
@@ -332,8 +352,8 @@
                     <p class="text-slate-300">Set spending caps per category and track remaining budget color-coded in real time.</p>
                 </div>
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
-                    <span class="text-purple-400 font-bold">3. Attach Receipts</span>
-                    <p class="text-slate-300">Snap receipt photos directly with your phone camera or computer and view them anytime.</p>
+                    <span class="text-purple-400 font-bold">3. Backdated Expenses & Receipts</span>
+                    <p class="text-slate-300">Log past transactions anytime! Use the quick presets (Yesterday, Last Month) or pick any past date.</p>
                 </div>
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
                     <span class="text-indigo-400 font-bold">4. AI Insights Coach</span>
@@ -380,6 +400,35 @@
             if (token) showApp();
             else showAuth();
         });
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast-message').innerText = msg;
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3500);
+        }
+
+        function setTxDatePreset(type) {
+            const dateInput = document.getElementById('tx-date');
+            const d = new Date();
+            if (type === 'today') {
+                dateInput.valueAsDate = d;
+            } else if (type === 'yesterday') {
+                d.setDate(d.getDate() - 1);
+                dateInput.valueAsDate = d;
+            } else if (type === 'last_month') {
+                d.setMonth(d.getMonth() - 1);
+                dateInput.valueAsDate = d;
+            }
+        }
+
+        function jumpToCurrentMonth() {
+            const currentActualMonth = new Date().toISOString().slice(0, 7);
+            document.getElementById('global-month-filter').value = currentActualMonth;
+            loadAllData();
+        }
 
         function getConversionRate() {
             const code = CURRENCY_CODE_MAP[currentCurrency] || 'USD';
@@ -564,6 +613,17 @@
         // DATA LOADERS
         async function loadAllData() {
             try {
+                const selectedMonth = getSelectedMonth();
+                const actualCurrentMonth = new Date().toISOString().slice(0, 7);
+                const histBanner = document.getElementById('historical-banner');
+
+                if (selectedMonth !== actualCurrentMonth) {
+                    document.getElementById('historical-month-label').innerText = selectedMonth;
+                    histBanner.classList.remove('hidden');
+                } else {
+                    histBanner.classList.add('hidden');
+                }
+
                 await renderSummary();
                 await renderAccounts();
                 await renderCategories();
@@ -640,6 +700,7 @@
 
             await authFetch('/api/accounts', { method: 'POST', body: JSON.stringify({ name, type, balance: balanceUsd }) });
             document.getElementById('account-modal').classList.add('hidden');
+            showToast('🏦 Account added successfully!');
             loadAllData();
         }
 
@@ -648,6 +709,7 @@
             if (!isNaN(val)) {
                 const balanceUsd = unconvert(val);
                 await authFetch(`/api/accounts/${id}`, { method: 'PUT', body: JSON.stringify({ balance: balanceUsd }) });
+                showToast('🏦 Balance updated!');
                 loadAllData();
             }
         }
@@ -655,6 +717,7 @@
         async function deleteAccount(id) {
             if (confirm("Delete this account?")) {
                 await authFetch(`/api/accounts/${id}`, { method: 'DELETE' });
+                showToast('Account deleted');
                 loadAllData();
             }
         }
@@ -807,6 +870,7 @@
             if (!isNaN(val) && val >= 0) {
                 const limitUsd = unconvert(val);
                 await authFetch(`/api/categories/${id}`, { method: 'PUT', body: JSON.stringify({ limit: limitUsd }) });
+                showToast('🎯 Budget updated!');
                 loadAllData();
             }
         }
@@ -814,6 +878,7 @@
         async function deleteCategory(id) {
             if (confirm("Delete this category?")) {
                 await authFetch(`/api/categories/${id}`, { method: 'DELETE' });
+                showToast('Category deleted');
                 loadAllData();
             }
         }
@@ -851,13 +916,16 @@
             e.preventDefault();
             const rawAmount = parseFloat(document.getElementById('tx-amount').value);
             const amountUsd = unconvert(rawAmount);
+            const txDate = document.getElementById('tx-date').value;
+            const txMonth = txDate.slice(0, 7);
+            const activeMonth = getSelectedMonth();
 
             const payload = {
                 description: document.getElementById('tx-desc').value,
                 amount: amountUsd,
                 type: document.getElementById('tx-type').value,
                 category_name: document.getElementById('tx-category').value,
-                date: document.getElementById('tx-date').value,
+                date: txDate,
                 receipt_image: currentReceiptBase64
             };
 
@@ -865,6 +933,15 @@
             document.getElementById('tx-desc').value = '';
             document.getElementById('tx-amount').value = '';
             clearReceiptSelection();
+
+            // SMART AUTO-SWITCH MONTH VIEW IF BACKDATED
+            if (txMonth !== activeMonth) {
+                document.getElementById('global-month-filter').value = txMonth;
+                showToast(`📅 Logged transaction for ${txMonth}! Switched view to ${txMonth}.`);
+            } else {
+                showToast('✅ Transaction saved!');
+            }
+
             loadAllData();
         }
 
@@ -882,12 +959,14 @@
             if (res.ok) {
                 nameInput.value = ''; limitInput.value = '';
                 document.getElementById('cat-modal').classList.add('hidden');
+                showToast('Category saved!');
                 loadAllData();
             }
         }
 
         async function deleteTx(id) {
             await authFetch(`/api/transactions/${id}`, { method: 'DELETE' });
+            showToast('Transaction deleted');
             loadAllData();
         }
 
@@ -946,6 +1025,7 @@
                 }) 
             });
             document.getElementById('goal-modal').classList.add('hidden');
+            showToast('🎯 Goal created!');
             loadAllData();
         }
 
@@ -953,12 +1033,14 @@
             const changeUsd = unconvert(changeDisplay);
             const newAmountUsd = Math.max(0, currentUsd + changeUsd);
             await authFetch(`/api/goals/${id}`, { method: 'PUT', body: JSON.stringify({ current_amount: newAmountUsd }) });
+            showToast('Goal progress updated!');
             loadAllData();
         }
 
         async function deleteGoal(id) {
             if (confirm("Delete this goal?")) {
                 await authFetch(`/api/goals/${id}`, { method: 'DELETE' });
+                showToast('Goal deleted');
                 loadAllData();
             }
         }
@@ -1002,6 +1084,7 @@
                 body: JSON.stringify({ name, amount: unconvert(rawAmount), billing_cycle: 'monthly', category_name, due_day }) 
             });
             document.getElementById('recurring-modal').classList.add('hidden');
+            showToast('Subscription added!');
             loadAllData();
         }
 
@@ -1014,13 +1097,14 @@
                 date: new Date().toISOString().slice(0, 10)
             };
             await authFetch('/api/transactions', { method: 'POST', body: JSON.stringify(payload) });
-            alert(`Logged ${fmt(amountUsd)} expense for ${name}!`);
+            showToast(`Logged ${fmt(amountUsd)} expense for ${name}!`);
             loadAllData();
         }
 
         async function deleteRecurring(id) {
             if (confirm("Delete this subscription?")) {
                 await authFetch(`/api/recurring/${id}`, { method: 'DELETE' });
+                showToast('Subscription deleted');
                 loadAllData();
             }
         }
