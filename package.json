@@ -1,7 +1,7 @@
 {
-  "name": "apex-budget-teller-sync",
+  "name": "apex-budget-saas",
   "version": "1.0.0",
-  "description": "Multi-User Budget App with Teller.io Real Bank Sync & AES-256 Encryption",
+  "description": "Multi-User Full-stack Budgeting SaaS with PostgreSQL",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

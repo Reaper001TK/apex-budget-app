@@ -2,16 +2,13 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const path = require('path');
-const https = require('https');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const compression = require('compression');
-const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'apex_budget_super_secret_jwt_key_2026';
-const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'apex_budget_super_secret_32byte_key_1234';
 
 app.use(compression());
 app.use(cors());
@@ -24,72 +21,6 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
-
-// --- AES-256-GCM BANK ENCRYPTION HELPERS ---
-function encryptToken(text) {
-    const iv = crypto.randomBytes(12);
-    const key = crypto.scryptSync(ENCRYPTION_SECRET, 'salt', 32);
-    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag().toString('hex');
-    return `${iv.toString('hex')}:${authTag}:${encrypted}`;
-}
-
-function decryptToken(encryptedData) {
-    if (!encryptedData) return null;
-    const [ivHex, authTagHex, encryptedText] = encryptedData.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const authTag = Buffer.from(authTagHex, 'hex');
-    const key = crypto.scryptSync(ENCRYPTION_SECRET, 'salt', 32);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-}
-
-// --- TELLER API CLIENT (Native mTLS & HTTPS) ---
-function tellerRequest(endpoint, accessToken) {
-    return new Promise((resolve, reject) => {
-        const options = {
-            hostname: 'api.teller.io',
-            port: 443,
-            path: endpoint,
-            method: 'GET',
-            auth: `${accessToken}:`,
-            headers: {
-                'Teller-Version': '2020-10-12',
-                'Content-Type': 'application/json'
-            }
-        };
-
-        // If client certificates are provided in Render environment, attach for mTLS
-        if (process.env.TELLER_CERT && process.env.TELLER_KEY) {
-            options.cert = process.env.TELLER_CERT.replace(/\\n/g, '\n');
-            options.key = process.env.TELLER_KEY.replace(/\\n/g, '\n');
-        }
-
-        const req = https.request(options, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                try {
-                    const parsed = JSON.parse(data);
-                    if (res.statusCode >= 400) {
-                        return reject(new Error(parsed.error?.message || `Teller error (${res.statusCode})`));
-                    }
-                    resolve(parsed);
-                } catch (e) {
-                    reject(new Error(`Failed to parse Teller response: ${data}`));
-                }
-            });
-        });
-
-        req.on('error', reject);
-        req.end();
-    });
-}
 
 // --- LIVE CURRENCY EXCHANGE RATE ENGINE ---
 let cachedRates = { USD: 1, EUR: 0.92, GBP: 0.79, JPY: 155.0, INR: 83.5, CAD: 1.36, AUD: 1.51, BRL: 5.4, MXN: 18.2, CHF: 0.89, KRW: 1375.0 };
@@ -139,37 +70,13 @@ async function initDb() {
         `);
 
         await pool.query(`
-            CREATE TABLE IF NOT EXISTS teller_enrollments (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                enrollment_id TEXT UNIQUE NOT NULL,
-                access_token_encrypted TEXT NOT NULL,
-                institution_name TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        await pool.query(`
             CREATE TABLE IF NOT EXISTS financial_accounts (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 type TEXT CHECK(type IN ('checking', 'savings', 'investment', 'credit_card', 'loan')) NOT NULL,
-                balance NUMERIC DEFAULT 0,
-                teller_account_id TEXT,
-                teller_enrollment_id INTEGER REFERENCES teller_enrollments(id) ON DELETE CASCADE
+                balance NUMERIC DEFAULT 0
             );
-        `);
-
-        // Migration: Ensure teller columns exist
-        await pool.query(`
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='financial_accounts' AND column_name='teller_account_id') THEN
-                    ALTER TABLE financial_accounts ADD COLUMN teller_account_id TEXT;
-                    ALTER TABLE financial_accounts ADD COLUMN teller_enrollment_id INTEGER REFERENCES teller_enrollments(id) ON DELETE CASCADE;
-                END IF;
-            END $$;
         `);
 
         await pool.query(`
@@ -182,18 +89,17 @@ async function initDb() {
                 type TEXT NOT NULL,
                 category_name TEXT NOT NULL,
                 date TEXT NOT NULL,
-                receipt_image TEXT,
-                teller_transaction_id TEXT UNIQUE
+                receipt_image TEXT
             );
         `);
 
-        // Migration: Add teller_transaction_id if missing
+        // Migration: Enable 'transfer' in transaction types
         await pool.query(`
             DO $$
             BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='transactions' AND column_name='teller_transaction_id') THEN
-                    ALTER TABLE transactions ADD COLUMN teller_transaction_id TEXT UNIQUE;
-                END IF;
+                ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
+                ALTER TABLE transactions ADD CONSTRAINT transactions_type_check CHECK (type IN ('income', 'expense', 'transfer'));
+            EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
         `);
 
@@ -220,7 +126,15 @@ async function initDb() {
             );
         `);
 
-        console.log('⚡ PostgreSQL Database & Teller.io Sync Engine Ready!');
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON transactions(user_id, date DESC);
+            CREATE INDEX IF NOT EXISTS idx_categories_user ON categories(user_id);
+            CREATE INDEX IF NOT EXISTS idx_goals_user ON savings_goals(user_id);
+            CREATE INDEX IF NOT EXISTS idx_recurring_user ON recurring_bills(user_id);
+            CREATE INDEX IF NOT EXISTS idx_accounts_user ON financial_accounts(user_id);
+        `);
+
+        console.log('⚡ PostgreSQL Database & Core Financial Engine Ready!');
     } catch (err) {
         console.error('Database Initialization Error:', err.message);
     }
@@ -244,136 +158,6 @@ function authenticateToken(req, res, next) {
 app.get('/api/rates', async (req, res) => {
     const rates = await getExchangeRates();
     res.json({ base: 'USD', rates, last_updated: lastRatesFetch });
-});
-
-// --- TELLER INTEGRATION ENDPOINTS ---
-
-// 1. Get Teller Connect Configuration for Frontend
-app.get('/api/teller/config', authenticateToken, (req, res) => {
-    res.json({
-        applicationId: process.env.TELLER_APPLICATION_ID || 'app_test_sandbox',
-        environment: process.env.TELLER_ENV || 'sandbox'
-    });
-});
-
-// 2. Connect Bank via Teller Token
-app.post('/api/teller/connect', authenticateToken, async (req, res) => {
-    try {
-        const { accessToken, enrollmentId, institutionName } = req.body;
-        if (!accessToken || !enrollmentId) {
-            return res.status(400).json({ error: 'Teller access token and enrollment ID required.' });
-        }
-
-        // Encrypt Teller token before saving to database
-        const encryptedToken = encryptToken(accessToken);
-
-        // Save Enrollment
-        const enrollRes = await pool.query(
-            `INSERT INTO teller_enrollments (user_id, enrollment_id, access_token_encrypted, institution_name)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (enrollment_id) DO UPDATE SET access_token_encrypted = EXCLUDED.access_token_encrypted
-             RETURNING id`,
-            [req.user.id, enrollmentId, encryptedToken, institutionName || 'Bank']
-        );
-        const enrollmentDbId = enrollRes.rows[0].id;
-
-        // Fetch Accounts from Teller API
-        const accounts = await tellerRequest('/accounts', accessToken);
-
-        for (const acc of accounts) {
-            let accType = 'checking';
-            if (acc.type === 'depository') {
-                accType = acc.subtype === 'savings' ? 'savings' : 'checking';
-            } else if (acc.type === 'credit') {
-                accType = 'credit_card';
-            }
-
-            // Fetch live balances for account
-            let balance = 0;
-            try {
-                const balData = await tellerRequest(`/accounts/${acc.id}/balances`, accessToken);
-                balance = parseFloat(balData.available || balData.ledger || 0);
-            } catch (bErr) {
-                console.warn('Balance fetch note:', bErr.message);
-            }
-
-            const accName = `${institutionName || acc.institution?.name || 'Bank'} ${acc.name}`;
-
-            await pool.query(
-                `INSERT INTO financial_accounts (user_id, name, type, balance, teller_account_id, teller_enrollment_id)
-                 VALUES ($1, $2, $3, $4, $5, $6)`,
-                [req.user.id, accName, accType, balance, acc.id, enrollmentDbId]
-            );
-        }
-
-        res.json({ success: true, count: accounts.length, message: `Connected ${accounts.length} bank accounts successfully via Teller!` });
-    } catch (err) {
-        console.error('Teller Connect Error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// 3. Sync Live Bank Balances and Transactions from Teller
-app.post('/api/teller/sync', authenticateToken, async (req, res) => {
-    try {
-        const enrollments = await pool.query('SELECT * FROM teller_enrollments WHERE user_id = $1', [req.user.id]);
-        if (enrollments.rows.length === 0) {
-            return res.status(400).json({ error: 'No linked bank accounts found. Click "Link Bank Account" first.' });
-        }
-
-        let totalSynced = 0;
-
-        for (const enroll of enrollments.rows) {
-            const accessToken = decryptToken(enroll.access_token_encrypted);
-            if (!accessToken) continue;
-
-            const accounts = await tellerRequest('/accounts', accessToken);
-
-            for (const acc of accounts) {
-                // Update live balance
-                try {
-                    const balData = await tellerRequest(`/accounts/${acc.id}/balances`, accessToken);
-                    const balance = parseFloat(balData.available || balData.ledger || 0);
-                    await pool.query(
-                        'UPDATE financial_accounts SET balance = $1 WHERE teller_account_id = $2 AND user_id = $3',
-                        [balance, acc.id, req.user.id]
-                    );
-                } catch (bErr) {
-                    console.warn(bErr.message);
-                }
-
-                // Fetch live transactions
-                try {
-                    const transactions = await tellerRequest(`/accounts/${acc.id}/transactions`, accessToken);
-                    
-                    const dbAccRes = await pool.query('SELECT id FROM financial_accounts WHERE teller_account_id = $1 AND user_id = $2', [acc.id, req.user.id]);
-                    const accountId = dbAccRes.rows.length > 0 ? dbAccRes.rows[0].id : null;
-
-                    for (const tx of transactions) {
-                        const rawAmount = parseFloat(tx.amount);
-                        const amount = Math.abs(rawAmount);
-                        const type = rawAmount > 0 ? 'expense' : 'income';
-                        const desc = tx.description || 'Card Transaction';
-
-                        const insRes = await pool.query(
-                            `INSERT INTO transactions (user_id, account_id, description, amount, type, category_name, date, teller_transaction_id)
-                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                             ON CONFLICT (teller_transaction_id) DO NOTHING`,
-                            [req.user.id, accountId, desc, amount, type, 'Groceries', tx.date, tx.id]
-                        );
-                        if (insRes.rowCount > 0) totalSynced++;
-                    }
-                } catch (tErr) {
-                    console.warn(tErr.message);
-                }
-            }
-        }
-
-        res.json({ success: true, syncedCount: totalSynced });
-    } catch (err) {
-        console.error('Teller Sync Error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
 });
 
 // --- AUTH ROUTES ---
@@ -463,7 +247,6 @@ app.delete('/api/user/account', authenticateToken, async (req, res) => {
         await pool.query('DELETE FROM savings_goals WHERE user_id = $1', [uid]);
         await pool.query('DELETE FROM recurring_bills WHERE user_id = $1', [uid]);
         await pool.query('DELETE FROM financial_accounts WHERE user_id = $1', [uid]);
-        await pool.query('DELETE FROM teller_enrollments WHERE user_id = $1', [uid]);
         await pool.query('DELETE FROM users WHERE id = $1', [uid]);
 
         res.json({ success: true, message: 'Account permanently deleted' });
@@ -497,6 +280,7 @@ app.post('/api/transfers', authenticateToken, async (req, res) => {
         const fromAcc = fromAccRes.rows[0];
         const toAcc = toAccRes.rows[0];
 
+        // Deduct from source and deposit into destination
         await pool.query('UPDATE financial_accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [amountNum, from_account_id, req.user.id]);
         await pool.query('UPDATE financial_accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [amountNum, to_account_id, req.user.id]);
 
@@ -608,7 +392,7 @@ app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// --- TRANSACTIONS API ---
+// --- TRANSACTIONS API (With Automated Balance Deduction & Refund) ---
 
 app.get('/api/transactions', authenticateToken, async (req, res) => {
     try {
@@ -649,6 +433,7 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
             [req.user.id, account_id || null, description, amountNum, type, category_name, date, receipt_image || null]
         );
 
+        // Automatically sync bank balance
         if (account_id) {
             const accRes = await pool.query('SELECT type FROM financial_accounts WHERE id = $1 AND user_id = $2', [account_id, req.user.id]);
             if (accRes.rows.length > 0) {
@@ -763,7 +548,7 @@ app.delete('/api/recurring/:id', authenticateToken, async (req, res) => {
 
 app.get('/api/accounts', authenticateToken, async (req, res) => {
     try {
-        const result = await pool.query('SELECT id, name, type, balance::float, teller_account_id FROM financial_accounts WHERE user_id = $1 ORDER BY id ASC', [req.user.id]);
+        const result = await pool.query('SELECT id, name, type, balance::float FROM financial_accounts WHERE user_id = $1 ORDER BY id ASC', [req.user.id]);
         res.json(result.rows);
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -793,4 +578,4 @@ app.delete('/api/accounts/:id', authenticateToken, async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.listen(PORT, () => console.log(`🚀 Multi-User Budget App running with Teller on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 ApexBudget SaaS running on http://localhost:${PORT}`));
