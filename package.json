@@ -1,7 +1,7 @@
 {
-  "name": "apex-budget-bank-sync",
+  "name": "apex-budget-teller-sync",
   "version": "1.0.0",
-  "description": "Multi-User Budget App with Plaid Real Bank Sync & AES-256 Encryption",
+  "description": "Multi-User Budget App with Teller.io Real Bank Sync & AES-256 Encryption",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,7 +12,6 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.12.0",
-    "plaid": "^28.0.0"
+    "pg": "^8.12.0"
   }
 }

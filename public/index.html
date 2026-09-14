@@ -7,8 +7,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-    <!-- PLAID LINK SECURE SDK -->
-    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+    <!-- TELLER CONNECT OFFICIAL SDK -->
+    <script src="https://cdn.teller.io/connect/connect.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
 
@@ -160,15 +160,15 @@
             </div>
 
             <!-- ACCOUNTS TAB -->
-            <div id="view-accounts" class="hidden space-y-6">
+            <div id="view-accounts" class="space-y-6">
                 <div class="flex flex-wrap justify-between items-center bg-slate-800 border border-slate-700 p-4 rounded-xl gap-3">
                     <div>
                         <h2 class="text-lg font-bold">🏦 Accounts & Net Worth Tracker</h2>
-                        <p class="text-xs text-slate-400">Track checking, savings, credit card, and real bank connections.</p>
+                        <p class="text-xs text-slate-400">Track checking, savings, credit cards, and real bank connections via Teller.</p>
                     </div>
                     <div class="flex space-x-2">
-                        <button onclick="syncLivePlaidData()" class="bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold px-3 py-2 rounded-lg transition flex items-center gap-1">🔄 Sync Live Bank Data</button>
-                        <button onclick="launchPlaidLink()" class="bg-blue-600 hover:bg-blue-700 text-xs font-semibold px-3 py-2 rounded-lg transition flex items-center gap-1">🔗 Link Real Bank (Plaid)</button>
+                        <button onclick="syncLiveTellerData()" class="bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold px-3 py-2 rounded-lg transition flex items-center gap-1">🔄 Sync Live Bank Data</button>
+                        <button onclick="launchTellerConnect()" class="bg-blue-600 hover:bg-blue-700 text-xs font-semibold px-3 py-2 rounded-lg transition flex items-center gap-1">🔗 Link Real Bank (Teller)</button>
                         <button onclick="document.getElementById('account-modal').classList.remove('hidden')" class="bg-slate-700 hover:bg-slate-600 text-xs font-semibold px-3 py-2 rounded-lg transition">+ Manual Account</button>
                     </div>
                 </div>
@@ -390,7 +390,7 @@
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
                     <span class="text-blue-400 font-bold">1. Accounts & Real Bank Sync</span>
-                    <p class="text-slate-300">Track bank checking/savings or click "Link Real Bank" to sync live balances & transactions via Plaid.</p>
+                    <p class="text-slate-300">Track checking/savings or click "Link Real Bank" to sync live balances & transactions via Teller.</p>
                 </div>
                 <div class="bg-slate-900 p-4 rounded-xl space-y-2 border border-slate-700">
                     <span class="text-emerald-400 font-bold">2. Auto-Deduct Expenses</span>
@@ -455,48 +455,50 @@
             }, 3500);
         }
 
-        // PLAID LINK SECURE REAL BANK CONNECTION
-        async function launchPlaidLink() {
+        // TELLER CONNECT SECURE REAL BANK INTEGRATION
+        async function launchTellerConnect() {
             try {
-                const res = await authFetch('/api/plaid/create-link-token', { method: 'POST' });
-                const data = await res.json();
-                
-                if (!res.ok) {
-                    alert(data.error || "Plaid API Keys not configured on Render yet.");
-                    return;
-                }
+                const configRes = await authFetch('/api/teller/config');
+                const config = await configRes.json();
 
-                const handler = Plaid.create({
-                    token: data.link_token,
-                    onSuccess: async (public_token, metadata) => {
-                        showToast('⌛ Connecting real bank accounts...');
-                        const exRes = await authFetch('/api/plaid/exchange-public-token', {
+                const tellerConnect = TellerConnect.setup({
+                    applicationId: config.applicationId,
+                    environment: config.environment || 'sandbox',
+                    onSuccess: async function(enrollment) {
+                        showToast('⌛ Connecting real bank accounts via Teller...');
+                        const res = await authFetch('/api/teller/connect', {
                             method: 'POST',
                             body: JSON.stringify({
-                                public_token: public_token,
-                                institution_name: metadata.institution.name
+                                accessToken: enrollment.accessToken,
+                                enrollmentId: enrollment.enrollment?.id || `enr_${Date.now()}`,
+                                institutionName: enrollment.enrollment?.institution?.name || 'Bank'
                             })
                         });
-                        if (exRes.ok) {
-                            showToast('🎉 Real bank account linked & balances encrypted!');
+
+                        if (res.ok) {
+                            showToast('🎉 Bank accounts connected successfully!');
                             loadAllData();
+                        } else {
+                            const err = await res.json();
+                            alert(err.error || "Connection failed.");
                         }
                     },
-                    onExit: (err, metadata) => {
-                        if (err) console.error('Plaid Link Exit:', err);
+                    onExit: function() {
+                        console.log('User exited Teller Connect');
                     }
                 });
-                handler.open();
+
+                tellerConnect.open();
             } catch (e) {
                 console.error(e);
-                alert("Failed to initialize Plaid Link.");
+                alert("Failed to initialize Teller Connect.");
             }
         }
 
-        async function syncLivePlaidData() {
+        async function syncLiveTellerData() {
             try {
                 showToast('⌛ Syncing live bank transactions & balances...');
-                const res = await authFetch('/api/plaid/sync-transactions', { method: 'POST' });
+                const res = await authFetch('/api/teller/sync', { method: 'POST' });
                 const data = await res.json();
                 if (!res.ok) {
                     alert(data.error || "Live sync failed.");
@@ -794,7 +796,7 @@
                                 <h3 class="font-bold text-white text-base">${a.name}</h3>
                                 <div class="flex items-center space-x-1 mt-1">
                                     <span class="text-xs px-2 py-0.5 rounded capitalize ${isAsset ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}">${a.type.replace('_', ' ')}</span>
-                                    ${a.plaid_account_id ? '<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] px-1.5 py-0.5 rounded">🔗 Bank Synced</span>' : ''}
+                                    ${a.teller_account_id ? '<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] px-1.5 py-0.5 rounded">🔗 Bank Synced (Teller)</span>' : ''}
                                 </div>
                             </div>
                             <button onclick="deleteAccount(${a.id})" class="text-xs text-slate-500 hover:text-rose-400">✕</button>
